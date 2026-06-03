@@ -1,0 +1,20 @@
+RewriteEngine On
+RewriteBase /
+
+# Block direct access to sys/ (config, keys, DB, logs)
+RewriteRule ^sys/ - [F,L]
+
+# ── Standalone deployment (SUFI is the whole site) ───────────────────────────
+# Uncomment these three lines and comment out the "Coexistence" block below.
+# RewriteCond %{REQUEST_FILENAME} !-d
+# RewriteCond %{REQUEST_FILENAME} !-f
+# RewriteRule ^(.+)$ index.php [QSA,L]
+
+# ── Coexistence deployment (SUFI alongside an existing PHP site) ──────────────
+# Only intercept the paths SUFI owns; everything else falls through to the
+# existing site. If your site already has its own .htaccess router, add these
+# rules BEFORE it in the main .htaccess instead of using this file.
+
+RewriteCond %{REQUEST_URI} ^/(\.well-known/(webfinger|host-meta)|ap(/|$)|@[^/]+/?$)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [QSA,L]

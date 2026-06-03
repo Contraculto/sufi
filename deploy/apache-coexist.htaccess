@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SUFI coexistence rules for Apache
+#
+# Scenario: SUFI files are in /sufi/ inside an existing site's document root.
+#   /var/www/html/           ← existing site
+#   /var/www/html/sufi/      ← SUFI files live here
+#
+# Add these rules to the EXISTING SITE'S .htaccess, BEFORE its own routing.
+# SUFI's own .htaccess (inside /sufi/) handles sys/ protection.
+# ─────────────────────────────────────────────────────────────────────────────
+
+RewriteEngine On
+
+# Block direct access to SUFI's sys/ directory
+RewriteRule ^sufi/sys/ - [F,L]
+
+# Route ActivityPub discovery and API paths to SUFI
+RewriteRule ^\.well-known/(webfinger|host-meta)$ /sufi/index.php [QSA,L]
+RewriteRule ^ap(/.*)?$ /sufi/index.php [QSA,L]
+RewriteRule ^@([^/]+)/?$ /sufi/index.php [QSA,L]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Then add your existing site's routing rules below this line.
+# ─────────────────────────────────────────────────────────────────────────────

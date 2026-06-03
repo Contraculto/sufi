@@ -1,0 +1,5 @@
+# Never commit secrets or runtime data
+sys/private.pem
+sys/public.pem
+sys/sufi.sqlite
+sys/logs/
