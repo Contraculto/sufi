@@ -13,7 +13,7 @@ cd /mnt/Sixto/DEV/sufi
 php -S 127.0.0.1:8080
 
 # Production deploy
-SUFI_DEPLOY_HOST=your-host.com ./deploy/deploy.sh
+# Sync files to your server, then follow README.md setup steps.
 ```
 
 ---
@@ -37,7 +37,7 @@ sufi/
 ├── index.php               # Entry point / router
 ├── sys/                    # Keys, SQLite DB, logs
 ├── templates/              # HTML templates
-├── deploy/                 # Deploy scripts
+├── deploy/                 # Web server configuration examples
 └── .htaccess               # Apache rewrite rules
 ```
 
@@ -66,11 +66,9 @@ php -l index.php            # Syntax check
 
 ## 6. Deploy
 
-```bash
-./deploy/deploy.sh
-```
+Deploy manually: sync all files except `sys/` to the server, then generate keys and configure `sys/config.php` using the setup steps in `README.md`.
 
-Or manually: sync all files except `sys/` to the server, then generate keys via the setup flow.
+See `deploy/` for Apache and Nginx configuration examples.
 
 ---
 

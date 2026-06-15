@@ -7,11 +7,19 @@ require __DIR__ . "/templates/actor.php";
 require __DIR__ . "/templates/webfinger.php";
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
+if (!file_exists(__DIR__ . '/sys/private.pem')) {
+    http_response_code(500);
+    die('Missing RSA private key. Generate it with: openssl genrsa -out sys/private.pem 2048');
+}
+
 $db_handler = System\Database\connect_database();
 $user_data  = System\Database\get_user_data($db_handler);
 
 session_set_cookie_params(['httponly' => true, 'secure' => true, 'samesite' => 'Strict']);
 session_start();
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
+}
 
 // ── Router ────────────────────────────────────────────────────────────────────
 $request = strtok($_SERVER["REQUEST_URI"], '?');
@@ -239,6 +247,7 @@ function create_post_endpoint() {
         echo "Unauthorized";
         return;
     }
+    require_csrf_if_session();
 
     $content  = $_POST['content']     ?? ($body['content']     ?? null);
     $in_reply = $_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? null);
@@ -322,6 +331,7 @@ function delete_post_endpoint($guid) {
     global $db_handler, $server;
 
     if (!panel_auth()) { http_response_code(401); echo "Unauthorized"; return; }
+    require_csrf_if_session();
 
     if (!System\Database\get_post($db_handler, $guid)) {
         http_response_code(404); echo "Not found"; return;
@@ -344,6 +354,7 @@ function update_post_endpoint($guid) {
     global $body, $db_handler, $server;
 
     if (!panel_auth()) { http_response_code(401); echo "Unauthorized"; return; }
+    require_csrf_if_session();
 
     $content = $_POST['content'] ?? ($body['content'] ?? null);
     if (!$content) { http_response_code(400); echo "Missing content"; return; }
@@ -395,6 +406,7 @@ function action_users() {
         echo "Unauthorized";
         return;
     }
+    require_csrf_if_session();
 
     $user   = $_POST["user"]   ?? null;
     $action = $_POST["action"] ?? null;
@@ -455,7 +467,7 @@ function action_users() {
         System\Database\remove_following($db_handler, $profileUrl);
     }
 
-    echo "{$action} sent to {$user}";
+    echo htmlspecialchars("{$action} sent to {$user}");
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -613,7 +625,7 @@ function verifyHTTPSignature() {
     global $input, $body, $server, $directories;
 
     $type    = urlencode($body["type"] ?? "unknown");
-    $headers = array_change_key_case(getallheaders(), CASE_LOWER);
+    $headers = array_change_key_case(get_request_headers(), CASE_LOWER);
 
     if (!isset($headers["date"])) {
         save_log("{$type}.Signature.NoDate", print_r($headers, true));
@@ -695,7 +707,31 @@ function verifyHTTPSignature() {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function panel_auth() {
-    return !empty($_SESSION['auth']);
+    global $password;
+
+    if (!empty($_SESSION['auth'])) {
+        return true;
+    }
+    // API/script access: allow a valid password in the request body.
+    return request_password() === $password;
+}
+
+/**
+ * When the caller is authenticated via session (browser panel), require a
+ * valid CSRF token. Password-authenticated API clients are not subject to
+ * CSRF because they prove possession of the secret directly.
+ */
+function require_csrf_if_session() {
+    global $body;
+    if (empty($_SESSION['auth'])) {
+        return;
+    }
+    $token = $_POST['csrf_token'] ?? ($body['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
+    if (empty($_SESSION['csrf_token']) || empty($token) || !hash_equals($_SESSION['csrf_token'], $token)) {
+        http_response_code(403);
+        echo "Invalid CSRF token";
+        exit;
+    }
 }
 
 function uuid($message = null) {

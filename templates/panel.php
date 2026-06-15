@@ -166,6 +166,7 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 
 <script>
 const BASE = window.location.origin;
+const CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
 
 function setStatus(msg, ok = true) {
     const el = document.getElementById('status');
@@ -184,7 +185,10 @@ async function api(path, data) {
     const r = await fetch(`${BASE}${path}`, {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CSRF-Token': CSRF_TOKEN
+        },
         body: new URLSearchParams(data)
     });
     if (r.status === 401) { location.href = '/sufi/'; }

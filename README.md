@@ -234,7 +234,16 @@ Then search for `@alice@example.com` in Mastodon or any other fediverse client. 
 
 ## API
 
-SUFI has a simple password-protected HTTP API for creating content and managing social connections. Use it from a script, curl, or any HTTP client.
+SUFI has a simple HTTP API for creating content and managing social connections. You can use it from a script, curl, or any HTTP client.
+
+### Authentication
+
+Two methods are supported:
+
+1. **Session cookie** — log in via `/sufi/login` and use the returned cookie for all requests. This is what the web panel uses.
+2. **Password in request body** — include `password=your-secret` in POST form data or JSON for write endpoints.
+
+Read-only endpoints (`GET /ap/post`, `GET /ap/inbox`) require a session cookie. Write endpoints accept either method.
 
 ### Create a post
 
@@ -283,18 +292,40 @@ curl -X POST https://example.com/ap/action \
 ### List your posts
 
 ```
-GET /ap/post?password=your-secret
+GET /ap/post
+Cookie: PHPSESSID=...
 ```
 
-Returns a JSON array of all posts from the database.
+Returns a JSON array of all posts from the database. Use a cookie jar to preserve the session:
 
-### View log entries
-
-```
-GET /ap/inbox?password=your-secret
+```bash
+curl -c sufi.cookies -b sufi.cookies https://example.com/ap/post
 ```
 
-Returns filenames of the 50 most recent signature verification logs.
+(First log in to obtain the cookie, see example below.)
+
+### View inbox items
+
+```
+GET /ap/inbox
+Cookie: PHPSESSID=...
+```
+
+Returns the 50 most recent items received by the inbox.
+
+### Scripting example (cookie jar)
+
+```bash
+# Log in and save the session cookie
+curl -c sufi.cookies -b sufi.cookies \
+  -d "password=your-secret" \
+  https://example.com/sufi/login
+
+# Create a post using the session
+curl -c sufi.cookies -b sufi.cookies \
+  -d "content=Hello from a script" \
+  https://example.com/ap/post
+```
 
 ---
 
@@ -371,6 +402,7 @@ rm sys/sufi.sqlite
 - The private key (`sys/private.pem`) and database (`sys/sufi.sqlite`) are inside `sys/` and therefore protected
 - Never commit `sys/private.pem` or `sys/sufi.sqlite` to version control — add them to `.gitignore`
 - The `password` in `config.php` is compared with `===` (plain string). Use a long random value. There is no rate limiting, so consider IP-restricting `/ap/post` and `/ap/action` at the web server level if needed
+- Browser-based requests use a session cookie protected by a CSRF token; script/API clients authenticate with the password in the request body
 - Signature verification is performed for all Follow and Undo activities
 - Incoming `Create`, `Announce`, `Like`, `Update`, and `Delete` activities are accepted with HTTP 202 but not stored — SUFI is a publishing server, not a reader
 
