@@ -56,7 +56,8 @@ sufi/
 | Change actor/profile output | `index.php` (ActivityPub JSON endpoints) |
 | Verify HTTP Signatures | `index.php` (signature verification logic) |
 | Change HTML views | `templates/` |
-| Rotate keys | `sys/` (regenerate RSA pair) |
+| Rotate keys | Replace `sys/private.pem`; the Actor row syncs on next request |
+| Actor creation | `ensure_actor()` in `sys/database.php` (runs on bootstrap) |
 | Add or fix a test | `tests/run.php` (assertions), `scripts/test.sh` (setup) |
 
 ---
@@ -64,7 +65,7 @@ sufi/
 ## 5. Dev Commands
 
 ```bash
-php -S 127.0.0.1:8080       # Local server (needs sys/private.pem + an Actor row)
+php -S 127.0.0.1:8080       # Local server (needs only sys/private.pem)
 php -l index.php            # Syntax check
 ./scripts/test.sh           # Full suite, no dependencies beyond PHP + OpenSSL
 ```

@@ -56,18 +56,8 @@ make_instance() {
 \$base_path     = '$base';
 \$cookie_secure = false;
 \$base_url      = 'http://127.0.0.1:$inst_port$base/';
+\$actor_name    = 'Alice';
 PHP
-
-    "$php" -r '
-        require $argv[1] . "/sys/config.php";
-        require $argv[1] . "/sys/database.php";
-        $db = SUFI\System\Database\connect_database();
-        SUFI\System\Database\run($db,
-            "INSERT INTO Actor (type, name, username, summary, domain, base_url, icon, public_key)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ["Person", "Alice", "alice", "test bio", $argv[2], $argv[3], "",
-             trim(file_get_contents($argv[1] . "/sys/public.pem"))]);
-    ' "$dir" "127.0.0.1:$inst_port" "http://127.0.0.1:$inst_port$base/"
 }
 
 say 'building sandbox'
@@ -95,6 +85,7 @@ export SUFI_PREFIX_URL="http://127.0.0.1:$port_prefix"
 export SUFI_REMOTE_URL="http://127.0.0.1:$port_remote"
 export SUFI_DB="$sandbox/root/sys/sufi.sqlite"
 export SUFI_PREFIX_DB="$sandbox/prefix/sys/sufi.sqlite"
+export SUFI_PREFIX_KEY="$sandbox/prefix/sys/private.pem"
 
 say 'running tests'
 if ! "$php" "$root/tests/run.php"; then

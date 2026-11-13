@@ -41,6 +41,48 @@ function get_user_data($DBH) {
     return $STH->fetch() ?: [];
 }
 
+/**
+ * Keep the single Actor row in step with sys/config.php.
+ *
+ * Creates it on first request, and afterwards keeps identity fields and the
+ * public key synced — so a new handle or a rotated private.pem needs no manual
+ * SQL. Profile fields (name, summary, icon) are only seeded on creation.
+ */
+function ensure_actor($DBH, $server, $username, $base_url, $private_key, $name, $summary, $icon) {
+    $public_key = '';
+    if (is_string($private_key) && $private_key !== ''
+        && ($key = openssl_pkey_get_private($private_key))) {
+        $public_key = openssl_pkey_get_details($key)['key'] ?? '';
+    }
+
+    $domain = parse_url("https://{$server}", PHP_URL_HOST) ?: (string) $server;
+    $row    = get_user_data($DBH);
+
+    if (!$row) {
+        run($DBH,
+            "INSERT INTO Actor (type, name, username, summary, domain, base_url, icon, public_key)
+             VALUES ('Person', ?, ?, ?, ?, ?, ?, ?)",
+            [$name, $username, $summary, $domain, $base_url, $icon, $public_key]
+        );
+        return;
+    }
+
+    $updates = [];
+    $params  = [];
+    if (($row['username'] ?? '') !== $username) { $updates[] = 'username = ?'; $params[] = $username; }
+    if (($row['domain']   ?? '') !== $domain)   { $updates[] = 'domain = ?';   $params[] = $domain; }
+    if (($row['base_url'] ?? '') !== $base_url) { $updates[] = 'base_url = ?'; $params[] = $base_url; }
+    if ($public_key !== '' && trim((string) ($row['public_key'] ?? '')) !== trim($public_key)) {
+        $updates[] = 'public_key = ?';
+        $params[]  = $public_key;
+    }
+
+    if (!$updates) { return; }
+
+    $params[] = $row['id'];
+    run($DBH, 'UPDATE Actor SET ' . implode(', ', $updates) . ' WHERE id = ?', $params);
+}
+
 // ── Followers ─────────────────────────────────────────────────────────────────
 
 function get_followers($DBH) {

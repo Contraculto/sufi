@@ -9,6 +9,12 @@ $password  = 'change-this-to-a-long-random-string';
 // Set to false to disable the web panel at /sufi/
 $panel_enabled = true;
 
+// Profile shown to other servers. Only used when the Actor row is created for
+// the first time; after that the database owns these fields.
+$actor_name    = 'Alice';
+$actor_summary = '';
+$actor_icon    = '';
+
 // Only send the session cookie over HTTPS. Turned off automatically when the
 // request is plain HTTP (local `php -S` development).
 $cookie_secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';

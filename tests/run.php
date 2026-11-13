@@ -147,6 +147,8 @@ check('actor username', 'alice', $actor['preferredUsername'] ?? null);
 check('actor inbox', "{$instance}/ap/inbox", $actor['inbox'] ?? null);
 check('actor has public key', true, str_contains((string) ($actor['publicKey']['publicKeyPem'] ?? ''), 'BEGIN PUBLIC KEY'));
 check('actor key id', "{$instance}/ap/actor#main-key", $actor['publicKey']['id'] ?? null);
+check('actor auto-created from config', 'Alice', $actor['name'] ?? null);
+check('one actor row', 1, count(db($db_path, 'SELECT * FROM Actor')));
 
 // ── routing ───────────────────────────────────────────────────────────────────
 
@@ -340,6 +342,14 @@ $csrf = token($r[2]);
 $r = expect('prefixed post', 200, post("{$prefix}/sufi/ap/post", ['content' => 'prefixed', 'csrf_token' => $csrf], $jar));
 check('prefixed post id', true, str_starts_with((string) (json_body($r)['object']['id'] ?? ''), "{$prefix}/sufi/ap/post/"));
 check('prefixed post stored', 1, count(db($pdb_path, 'SELECT * FROM Post')));
+
+// Rotating sys/private.pem must update the served public key by itself.
+$new_res = openssl_pkey_new(['private_key_bits' => 2048]);
+openssl_pkey_export($new_res, $new_priv);
+file_put_contents((string) getenv('SUFI_PREFIX_KEY'), $new_priv);
+$r = expect('actor after key rotation', 200, http('GET', "{$prefix}/sufi/ap/actor"));
+check('rotated key is served', trim(openssl_pkey_get_details($new_res)['key']), trim(json_body($r)['publicKey']['publicKeyPem'] ?? ''));
+check('actor not duplicated', 1, count(db($pdb_path, 'SELECT * FROM Actor')));
 
 // ── summary ───────────────────────────────────────────────────────────────────
 

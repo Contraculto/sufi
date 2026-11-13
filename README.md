@@ -78,7 +78,7 @@ deploy/
 
 | Table | What it stores |
 |-------|----------------|
-| `Actor` | Your profile: name, bio, domain, public key |
+| `Actor` | Your profile: name, bio, domain, public key (created automatically) |
 | `Follower` | Everyone following you (actor URI + their inbox URL) |
 | `Following` | Everyone you follow |
 | `Post` | Your notes/posts |
@@ -154,28 +154,23 @@ setup the files live in `/var/www/html/sufi/` but the activity URLs are still
 
 ### 5. Initialize the database
 
-The schema applies automatically on the first request, but you need to insert your Actor row once:
+Nothing to do. The schema is applied and your Actor row is created on the first
+request, from `sys/config.php` and `sys/private.pem`.
 
-```bash
-PUBLIC_KEY=$(cat sys/public.pem)
+Display name, bio and avatar come from `$actor_name`, `$actor_summary` and
+`$actor_icon` in the config — but only on that first creation. After that the
+database owns those three fields:
 
-sqlite3 sys/sufi.sqlite "
-INSERT INTO Actor (type, name, username, summary, domain, base_url, icon, public_key)
-VALUES (
-  'Person',
-  'Alice',
-  'alice',
-  'My bio here',
-  'example.com',
-  'https://example.com/',
-  'https://example.com/avatar.jpg',
-  '$PUBLIC_KEY'
-);"
-```
-
-To update your profile later:
 ```bash
 sqlite3 sys/sufi.sqlite "UPDATE Actor SET summary='New bio' WHERE id=1;"
+```
+
+Identity (`$username`, `$server`) and the public key are always kept in sync
+with the config, so changing your handle or rotating your key needs no SQL.
+
+Test it without a browser:
+```bash
+curl -s http://127.0.0.1:8080/ap/actor | python3 -m json.tool
 ```
 
 ### 6. Configure your web server
@@ -432,14 +427,9 @@ rm sys/sufi.sqlite
 
 ## Updating your public key
 
-If you regenerate your RSA keys, update the public key in the database:
-
-```bash
-NEW_KEY=$(cat sys/public.pem)
-sqlite3 sys/sufi.sqlite "UPDATE Actor SET public_key='$NEW_KEY' WHERE id=1;"
-```
-
-Followers will get your new key the next time their server fetches your actor profile.
+Replace `sys/private.pem` with the new key and leave `sys/public.pem` next to it.
+The Actor row picks the new public key up on the next request; no SQL needed.
+Followers get it the next time their server fetches your actor profile.
 
 ---
 

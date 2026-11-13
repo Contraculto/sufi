@@ -18,6 +18,16 @@ if (!file_exists(__DIR__ . '/sys/private.pem')) {
 }
 
 $db_handler = System\Database\connect_database();
+System\Database\ensure_actor(
+    $db_handler,
+    $server,
+    $username,
+    $base_url,
+    $key_private,
+    $actor_name    ?? $username,
+    $actor_summary ?? '',
+    $actor_icon    ?? ''
+);
 $user_data  = System\Database\get_user_data($db_handler);
 
 session_set_cookie_params([
