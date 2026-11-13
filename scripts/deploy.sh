@@ -52,12 +52,15 @@ if [[ $DRY -eq 1 ]]; then
         "$ROOT/" "root@$HOST:$REMOTE_DIR/"
     rsync -navc "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "$ROOT/sys/delivery.php" "root@$HOST:$REMOTE_DIR/sys/"
     rsync -navc "$ROOT/scripts/ops/deliver.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
+    rsync -navc "$ROOT/scripts/ops/backup.sh" "$ROOT/scripts/ops/prune.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
     echo
     log "DRY-RUN — runtime files stay untouched:"
     echo "  sys/config.php  sys/private.pem  sys/public.pem  sys/sufi.sqlite  sys/logs/"
     echo
-    log "DRY-RUN — cron entry for the delivery worker:"
+    log "DRY-RUN — cron entries:"
     echo "  * * * * * www-data php $REMOTE_DIR/scripts/ops/deliver.php"
+    echo "  17 4 * * * www-data bash $REMOTE_DIR/scripts/ops/backup.sh"
+    echo "  27 4 * * * www-data php $REMOTE_DIR/scripts/ops/prune.php"
     exit 0
 fi
 
@@ -72,15 +75,18 @@ rsync -a --delete \
 rsync -a "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "$ROOT/sys/delivery.php" "root@$HOST:$REMOTE_DIR/sys/"
 ssh "root@$HOST" "mkdir -p $REMOTE_DIR/scripts/ops"
 rsync -a "$ROOT/scripts/ops/deliver.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
+rsync -a "$ROOT/scripts/ops/backup.sh" "$ROOT/scripts/ops/prune.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
 
 log "linting on the server"
 ssh "root@$HOST" "php -l $REMOTE_DIR/index.php > /dev/null \
     && php -l $REMOTE_DIR/sys/delivery.php > /dev/null \
-    && php -l $REMOTE_DIR/scripts/ops/deliver.php > /dev/null" \
+    && php -l $REMOTE_DIR/scripts/ops/deliver.php > /dev/null \\
+    && php -l $REMOTE_DIR/scripts/ops/prune.php > /dev/null" \
     || die "syntax error or missing file on server"
 
-log "installing delivery worker cron"
-ssh "root@$HOST" "printf '# SUFI delivery worker\\n* * * * * www-data php $REMOTE_DIR/scripts/ops/deliver.php >/dev/null 2>&1\\n' > /etc/cron.d/sufi-deliver && chmod 644 /etc/cron.d/sufi-deliver && cat /etc/cron.d/sufi-deliver"
+log "installing cron jobs"
+ssh "root@$HOST" "printf '# SUFI: deliveries every minute, daily backup and inbox pruning\\n* * * * * www-data php $REMOTE_DIR/scripts/ops/deliver.php >/dev/null 2>&1\\n17 4 * * * www-data bash $REMOTE_DIR/scripts/ops/backup.sh >/dev/null 2>&1\\n27 4 * * * www-data php $REMOTE_DIR/scripts/ops/prune.php >/dev/null 2>&1\\n' > /etc/cron.d/sufi && chmod 644 /etc/cron.d/sufi && cat /etc/cron.d/sufi"
+ssh "root@$HOST" "rm -f /etc/cron.d/sufi-deliver"
 
 log "checking federation endpoints"
 for path in "/.well-known/webfinger" "/ap/actor" "/ap/outbox"; do
@@ -96,6 +102,9 @@ log "  webfinger for @$HANDLE@$HOST OK"
 code=$(curl -s -o /dev/null -w '%{http_code}' "https://$HOST/sufi/")
 [[ "$code" == "200" ]] || die "panel returned $code"
 log "  panel /sufi/ → 200"
+
+log "recent security log entries (if any)"
+ssh "root@$HOST" "test -f $REMOTE_DIR/sys/logs/security.log && tail -n 5 $REMOTE_DIR/sys/logs/security.log || echo '  none'"
 
 log "✅ deployed"
 echo "Rollback if needed:"

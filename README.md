@@ -71,6 +71,8 @@ sys/
   cache/           short-lived cache of remote actor documents
 scripts/
   ops/deliver.php  delivery worker, run from cron every minute
+  ops/backup.sh    daily SQLite backup (keeps the last 14)
+  ops/prune.php    drops inbox items older than $inbox_retention_days
 templates/
   actor.php        builds Actor JSON
   webfinger.php    builds WebFinger JSON
@@ -172,6 +174,19 @@ Two more settings have safe defaults and rarely need touching:
 ```php
 $allow_private_fetch = false;  // keep false: only https + public IPs are fetched
 $outbox_page_size    = 20;     // posts per /ap/outbox page
+$max_post_chars      = 500;
+$max_upload_bytes    = 5242880;
+$inbox_retention_days = 90;
+$session_lifetime     = 43200;  // panel idle logout, seconds
+$login_max_attempts   = 5;      // per 15 minutes, per IP
+```
+
+The deploy script installs three cron jobs on the server:
+
+```
+* * * * *   delivery worker (retries with backoff)
+17 4 * * *  backup into sys/backups/, keeping the last 14
+27 4 * * *  prune inbox items older than the retention window
 ```
 
 ### 5. Initialize the database
@@ -356,6 +371,39 @@ Cookie: PHPSESSID=...
 
 Returns the 50 most recent items received by the inbox.
 
+### Profile
+
+```
+POST /ap/profile
+Cookie: PHPSESSID=...    (panel session, or password in the body)
+name=Rodrigo&summary=mostly+humano&icon=https://example.com/me.jpg
+```
+
+Name, bio and avatar are stored in the `Actor` row. Config only seeds them on
+first creation, so the panel (or this endpoint) is the way to change them later.
+
+### Uploading images
+
+```
+POST /ap/upload
+Cookie: PHPSESSID=...
+Content-Type: multipart/form-data
+
+file=@photo.jpg
+```
+
+Returns `{"url": "https://example.com/ap/media/<hash>.jpg", "mediaType": ..., "name": ...}`.
+Send that URL as the `attachment` field when creating a post, optionally with
+`attachment_description` for alt text. One image per post, JPEG/PNG/GIF/WebP,
+limited by `$max_upload_bytes`.
+
+### Inbox reading state
+
+`GET /ap/inbox` returns the last 50 items, each with `actor_handle`, `object_uri`,
+`data` and `is_read`. Add `?mark_read=1` to mark everything read (the response
+still reflects the pre-mark state, so the panel can show a badge). Add
+`?unread=1` to return only unread items.
+
 ### Followers and following
 
 ```
@@ -413,6 +461,9 @@ These are called automatically by other fediverse servers. You don't call them d
 | `GET` | `/ap/following` | List of actor URIs you follow |
 | `GET` | `/ap/likes` | Objects you have liked |
 | `GET` | `/ap/post/{guid}` | A single Note object |
+| `GET` | `/ap/media/{file}` | Uploaded images referenced by posts |
+| `GET` | `/ap/nodeinfo` | NodeInfo 2.1 document (software, post count) |
+| `GET` | `/.well-known/nodeinfo` | Discovery link for the NodeInfo document |
 | `GET` | `/ap/follow?uri={uri}` | Remote follow redirect for Mastodon's subscribe flow |
 | `GET` | `/@alice` | HTML profile page |
 
@@ -478,6 +529,13 @@ rm sys/sufi.sqlite
 - Remote fetches are limited to HTTPS and public IPs, with a 4s timeout, no redirects, and a short-lived cache — the inbox is public, so this matters
 - Failed signature checks and delivery failures append to a single rotated `sys/logs/security.log`, never one file per request
 - Blocked actors are dropped before signature verification
+- Panel login requires a CSRF token and is rate-limited per IP; sessions expire
+  after `$session_lifetime` of inactivity; the panel sends CSP / nosniff /
+  frame-deny headers
+- Uploads are validated with `getimagesize()`, stored under `sys/uploads/` and
+  served through `/ap/media/` — the directory itself is not web-accessible
+- Posts are stored as plain text and rendered to safe HTML (escaped, URL
+  linkified, paragraphs preserved) when they go out
 
 ---
 
@@ -486,6 +544,27 @@ rm sys/sufi.sqlite
 Replace `sys/private.pem` with the new key and leave `sys/public.pem` next to it.
 The Actor row picks the new public key up on the next request; no SQL needed.
 Followers get it the next time their server fetches your actor profile.
+
+---
+
+## Backups and restore
+
+`scripts/ops/backup.sh` uses SQLite's `VACUUM INTO`, so it is safe to run while
+the instance is live. Backups land in `sys/backups/` and the newest 14 are kept.
+
+```bash
+./scripts/ops/backup.sh                      # manual backup
+SUFI_BACKUP_KEEP=30 ./scripts/ops/backup.sh  # keep more
+```
+
+Restore:
+
+```bash
+sudo systemctl stop php8.4-fpm
+cp sys/backups/sufi-<stamp>.sqlite sys/sufi.sqlite
+rm -f sys/sufi.sqlite-wal sys/sufi.sqlite-shm
+sudo systemctl start php8.4-fpm
+```
 
 ---
 

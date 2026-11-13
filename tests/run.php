@@ -111,6 +111,38 @@ function sign_post(string $url, array $payload, string $key_path, string $key_id
     ]);
 }
 
+function rfc9421_post(string $url, array $payload, string $key_path, string $key_id): array {
+    $json   = json_encode($payload);
+    $parts  = parse_url($url);
+    $host   = $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '');
+    $path   = $parts['path'] ?? '/';
+    $date   = gmdate('D, d M Y H:i:s \G\M\T');
+    $digest = 'sha-256=:' . base64_encode(hash('sha256', $json, true)) . ':';
+
+    $components = ['@method', '@path', 'host', 'date', 'content-digest'];
+    $params     = '("' . implode('" "', $components) . '");created=' . time()
+        . ';keyid="' . $key_id . '";alg="rsa-v1_5-sha256"';
+
+    $base = implode("\n", [
+        '"@method": POST',
+        '"@path": ' . $path,
+        '"host": ' . $host,
+        '"date": ' . $date,
+        '"content-digest": ' . $digest,
+        '"@signature-params": ' . $params,
+    ]);
+    openssl_sign($base, $signature, openssl_get_privatekey(file_get_contents($key_path)), OPENSSL_ALGO_SHA256);
+
+    return http('POST', $url, $json, [
+        'Host: ' . $host,
+        'Date: ' . $date,
+        'Content-Digest: ' . $digest,
+        'Content-Type: application/activity+json',
+        'Signature-Input: sig1=' . $params,
+        'Signature: sig1=:' . base64_encode($signature) . ':',
+    ]);
+}
+
 function json_body(array $response): array {
     return json_decode($response[2], true) ?: [];
 }
@@ -123,6 +155,22 @@ function db(string $path, string $sql, array $params = []): array {
 
 function token(string $html): ?string {
     return preg_match('/const CSRF_TOKEN = "([^"]+)"/', $html, $m) ? $m[1] : null;
+}
+
+function multipart(array $fields, string $filename, string $type, string $data): array {
+    $boundary = '----sufi' . bin2hex(random_bytes(8));
+    $body     = '';
+    foreach ($fields as $key => $value) {
+        $body .= "--{$boundary}\r\nContent-Disposition: form-data; name=\"{$key}\"\r\n\r\n{$value}\r\n";
+    }
+    $body .= "--{$boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{$filename}\"\r\n"
+        . "Content-Type: {$type}\r\n\r\n{$data}\r\n--{$boundary}--\r\n";
+
+    return [$body, 'Content-Type: multipart/form-data; boundary=' . $boundary];
+}
+
+function form_token(string $html): ?string {
+    return preg_match('/name="csrf_token" value="([^"]+)"/', $html, $m) ? $m[1] : null;
 }
 
 // ── discovery ─────────────────────────────────────────────────────────────────
@@ -138,6 +186,16 @@ check('webfinger self points at actor', "{$instance}/ap/actor", $self);
 
 $r = expect('host-meta', 200, http('GET', "{$instance}/.well-known/host-meta"));
 check('host-meta advertises lrdd', true, str_contains($r[2], 'lrdd'));
+
+$r = expect('nodeinfo discovery', 200, http('GET', "{$instance}/.well-known/nodeinfo"));
+check('nodeinfo link', "{$instance}/ap/nodeinfo", json_body($r)['links'][0]['href'] ?? null);
+
+$r = expect('nodeinfo document', 200, http('GET', "{$instance}/ap/nodeinfo"));
+$nodeinfo = json_body($r);
+check('nodeinfo version', '2.1', $nodeinfo['version'] ?? null);
+check('nodeinfo software', 'sufi', $nodeinfo['software']['name'] ?? null);
+check('nodeinfo protocols', ['activitypub'], $nodeinfo['protocols'] ?? null);
+check('nodeinfo closed registrations', false, $nodeinfo['openRegistrations'] ?? null);
 
 $r = expect('actor', 200, http('GET', "{$instance}/ap/actor"));
 check('actor is activity+json', true, str_contains(implode(',', $r[1]['content-type'] ?? []), 'application/activity+json'));
@@ -175,7 +233,7 @@ section('Posts (password API)');
 $r = expect('create post', 200, post("{$instance}/ap/post", ['content' => 'first post', 'password' => 'testpass']));
 $create = json_body($r);
 check('create is a Create activity', 'Create', $create['type'] ?? null);
-check('note content', 'first post', $create['object']['content'] ?? null);
+check('note content is html', '<p>first post</p>', $create['object']['content'] ?? null);
 check('note attributed to actor', "{$instance}/ap/actor", $create['object']['attributedTo'] ?? null);
 $guid = basename((string) ($create['object']['id'] ?? ''));
 check('note id is under /ap/post/', true, str_starts_with((string) ($create['object']['id'] ?? ''), "{$instance}/ap/post/"));
@@ -184,13 +242,27 @@ $r = expect('fetch post', 200, http('GET', "{$instance}/ap/post/{$guid}"));
 check('post URL serves the Note', 'Note', json_body($r)['type'] ?? null);
 check('post URL id is the Note id', $create['object']['id'], json_body($r)['id'] ?? null);
 
+$r = expect('formatting post', 200, post("{$instance}/ap/post", [
+    'content' => "hello <script>alert(1)</script>\n\nsecond https://example.com/x",
+    'password' => 'testpass',
+]));
+$html = json_body($r)['object']['content'] ?? '';
+check('content is wrapped in paragraphs', true, str_starts_with($html, '<p>'));
+check('content escapes html', true, str_contains($html, '&lt;script&gt;'));
+check('content has no raw script', false, str_contains($html, '<script>'));
+check('content linkifies urls', true, str_contains($html, '<a href="https://example.com/x"'));
+check('content splits paragraphs', true, str_contains($html, '</p><p>second'));
+
+$r = post("{$instance}/ap/post", ['content' => str_repeat('a', 501), 'password' => 'testpass']);
+check('overlong post rejected', 400, $r[0]);
+
 $r = expect('outbox', 200, http('GET', "{$instance}/ap/outbox"));
-check('outbox has one item', 1, json_body($r)['totalItems'] ?? null);
+check('outbox has two items', 2, json_body($r)['totalItems'] ?? null);
 
 $r = expect('update post', 200, post("{$instance}/ap/post/{$guid}", ['action' => 'update', 'content' => 'edited', 'password' => 'testpass']));
 check('update activity type', 'Update', json_body($r)['type'] ?? null);
 $r = expect('fetch updated post', 200, http('GET', "{$instance}/ap/post/{$guid}"));
-check('updated content', 'edited', json_body($r)['content'] ?? null);
+check('updated content', '<p>edited</p>', json_body($r)['content'] ?? null);
 
 // ── outbox pagination ────────────────────────────────────────────────────────
 
@@ -232,14 +304,19 @@ check('page size respected', (int) ceil($total / 2), $pages);
 section('Panel');
 
 expect('panel canonical redirect', 302, http('GET', "{$instance}/sufi"));
-$r = expect('login form', 200, http('GET', "{$instance}/sufi/"));
+$jar = '';
+$r = expect('login form', 200, http('GET', "{$instance}/sufi/", null, [], $jar));
 check('login form has password field', true, str_contains($r[2], 'name="password"'));
+$login_csrf = form_token($r[2]);
+check('login form has csrf token', true, $login_csrf !== null);
 
-$r = expect('wrong password redirects', 302, post("{$instance}/sufi/", ['password' => 'wrong']));
+$r = expect('wrong password redirects', 302, post("{$instance}/sufi/", ['password' => 'wrong', 'csrf_token' => $login_csrf]));
 check('wrong password flags error', true, str_contains(implode(',', $r[1]['location'] ?? []), 'error=1'));
 
-$jar = '';
-$r = expect('login', 302, post("{$instance}/sufi/", ['password' => 'testpass'], $jar));
+$r = expect('login without csrf redirects', 302, post("{$instance}/sufi/", ['password' => 'testpass']));
+check('login without csrf is refused', true, str_contains(implode(',', $r[1]['location'] ?? []), 'error=1'));
+
+$r = expect('login', 302, post("{$instance}/sufi/", ['password' => 'testpass', 'csrf_token' => $login_csrf], $jar));
 check('login redirects to panel', "{$instance}/sufi/", $r[1]['location'][0] ?? null);
 check('session cookie set', true, str_starts_with($jar, 'PHPSESSID='));
 check('cookie is httponly', true, str_contains(implode(',', $r[1]['set-cookie'] ?? []), 'HttpOnly'));
@@ -254,10 +331,41 @@ $r = expect('people endpoint', 200, http('GET', "{$instance}/ap/people", null, [
 check('no followers yet', [], json_body($r)['followers'] ?? null);
 check('not following anyone yet', [], json_body($r)['following'] ?? null);
 
+$r = post("{$instance}/ap/profile", ['name' => 'Alice Updated', 'summary' => 'new bio', 'icon' => '', 'csrf_token' => $csrf], $jar);
+check('profile update', 200, $r[0]);
+$r = expect('actor after profile update', 200, http('GET', "{$instance}/ap/actor"));
+check('actor name updated', 'Alice Updated', json_body($r)['name'] ?? null);
+check('actor summary updated', 'new bio', json_body($r)['summary'] ?? null);
+
+$png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==');
+[$body, $type] = multipart([], 'pixel.png', 'image/png', $png);
+$r = expect('image upload', 200, http('POST', "{$instance}/ap/upload", $body,
+    [$type, 'X-CSRF-Token: ' . $csrf], $jar));
+$media = json_body($r);
+check('upload returns local url', true, str_starts_with((string) ($media['url'] ?? ''), "{$instance}/ap/media/"));
+check('upload media type', 'image/png', $media['mediaType'] ?? null);
+
+[$body, $type] = multipart([], 'notes.txt', 'text/plain', 'not an image');
+$r = http('POST', "{$instance}/ap/upload", $body, [$type, 'X-CSRF-Token: ' . $csrf], $jar);
+check('non-image upload rejected', 400, $r[0]);
+
 expect('session post without csrf', 403, post("{$instance}/ap/post", ['content' => 'nope'], $jar));
-$r = expect('session post with csrf', 200, post("{$instance}/ap/post", ['content' => 'from panel', 'csrf_token' => $csrf], $jar));
+$r = expect('session post with csrf', 200, post("{$instance}/ap/post", [
+    'content' => 'from panel',
+    'attachment' => $media['url'],
+    'attachment_description' => 'a pixel',
+    'csrf_token' => $csrf,
+], $jar));
 $second = json_body($r);
-check('panel post created', 'from panel', $second['object']['content'] ?? null);
+check('panel post created', '<p>from panel</p>', $second['object']['content'] ?? null);
+check('post has attachment', $media['url'], $second['object']['attachment'][0]['url'] ?? null);
+check('attachment has alt text', 'a pixel', $second['object']['attachment'][0]['name'] ?? null);
+check('attachment media type', 'image/png', $second['object']['attachment'][0]['mediaType'] ?? null);
+
+$r = http('GET', $media['url']);
+check('media served', 200, $r[0]);
+check('media content type', true, str_contains(implode(',', $r[1]['content-type'] ?? []), 'image/png'));
+check('media bytes round-trip', $png, $r[2]);
 
 expect('delete post', 200, post("{$instance}/ap/post/{$guid}", ['action' => 'delete', 'password' => 'testpass']));
 expect('deleted post is gone', 404, http('GET', "{$instance}/ap/post/{$guid}"));
@@ -338,6 +446,21 @@ $create_remote = [
 expect('signed Create', 202, sign_post($inbox, $create_remote, $key, $keyId));
 check('inbox item stored', 1, count(db($db_path, "SELECT * FROM InboxItem WHERE type = 'Create'")));
 
+$hostport = parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT);
+$auth_header = ['Content-Type: application/json'];
+$auth_body   = json_encode(['password' => 'testpass']);
+
+$r = expect('inbox listing', 200, http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header));
+$inbox_items = json_body($r);
+check('inbox item has readable handle', '@bob@' . $hostport, $inbox_items[0]['actor_handle'] ?? null);
+check('inbox item starts unread', 0, (int) ($inbox_items[0]['is_read'] ?? 1));
+
+$r = expect('inbox mark read', 200, http('GET', "{$instance}/ap/inbox?mark_read=1", $auth_body, $auth_header));
+check('mark_read returns pre-mark state', 0, (int) (json_body($r)[0]['is_read'] ?? 1));
+
+$r = http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header);
+check('inbox items read afterwards', 1, (int) (json_body($r)[0]['is_read'] ?? 0));
+
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
     'id'       => "{$actorU}#undos/1",
@@ -350,7 +473,14 @@ check('like removed', 0, json_body($r)['totalItems'] ?? null);
 
 // Delivery to followers on a new post.
 $r = expect('post to followers', 200, post("{$instance}/ap/post", ['content' => 'delivery-marker', 'password' => 'testpass']));
-check('new post delivered to follower inbox', true, str_contains((string) file_get_contents($rlog), '"content":"delivery-marker"'));
+check('new post delivered to follower inbox', true, str_contains((string) file_get_contents($rlog), 'delivery-marker'));
+
+// Mastodon 4.3+ uses RFC 9421 message signatures instead of the legacy scheme.
+$rfc_follow = $follow;
+$rfc_follow['id'] = "{$actorU}#follows/rfc";
+expect('rfc9421 signed Follow', 202, rfc9421_post($inbox, $rfc_follow, $key, $keyId));
+check('rfc9421 follow stored', 1,
+    count(db($db_path, 'SELECT * FROM Follower WHERE follow_id = ?', [$rfc_follow['id']])));
 
 expect('signed Undo Follow', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
@@ -417,6 +547,56 @@ expect('signed Delete', 202, sign_post($inbox, [
 ], $key, $keyId));
 check('deleted account dropped as follower', 0, count(db($db_path, 'SELECT * FROM Follower')));
 
+section('Follow state');
+
+$accept_id = "{$actorU}#follows/accept-1";
+db($db_path, "INSERT INTO Following (actor_uri, inbox, data, follow_id, state) VALUES (?, ?, ?, ?, 'pending')",
+    [$actorU, "{$remote}/inbox", '{"preferredUsername":"bob"}', $accept_id]);
+
+expect('signed Accept', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#accepts/1",
+    'type'     => 'Accept',
+    'actor'    => $actorU,
+    'object'   => ['id' => $accept_id, 'type' => 'Follow', 'actor' => "{$instance}/ap/actor", 'object' => $actorU],
+], $key, $keyId));
+check('follow marked accepted', 'accepted',
+    db($db_path, 'SELECT state FROM Following WHERE follow_id = ?', [$accept_id])[0]['state'] ?? null);
+
+$reject_id = "{$actorU}#follows/reject-1";
+db($db_path, "INSERT INTO Following (actor_uri, inbox, data, follow_id, state) VALUES (?, ?, ?, ?, 'pending')",
+    ["{$actorU}#other", "{$remote}/inbox", '{}', $reject_id]);
+
+expect('signed Reject', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#rejects/1",
+    'type'     => 'Reject',
+    'actor'    => $actorU,
+    'object'   => ['id' => $reject_id, 'type' => 'Follow', 'actor' => "{$instance}/ap/actor", 'object' => $actorU],
+], $key, $keyId));
+check('rejected follow removed', 0, count(db($db_path, 'SELECT * FROM Following WHERE follow_id = ?', [$reject_id])));
+
+// Undo that references the Follow activity id instead of the inline object.
+$undo_follow_id = "{$actorU}#follows/undo-id";
+expect('follow with tracked id', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => $undo_follow_id,
+    'type'     => 'Follow',
+    'actor'    => $actorU,
+    'object'   => "{$instance}/ap/actor",
+], $key, $keyId));
+check('follower stored with follow id', true,
+    (bool) db($db_path, 'SELECT * FROM Follower WHERE follow_id = ?', [$undo_follow_id]));
+
+expect('undo by activity id', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#undos/by-id",
+    'type'     => 'Undo',
+    'actor'    => $actorU,
+    'object'   => $undo_follow_id,
+], $key, $keyId));
+check('undo-by-id removed follower', 0, count(db($db_path, 'SELECT * FROM Follower')));
+
 section('Delivery retries');
 
 $fail_flag = $rlog . '.fail';
@@ -457,11 +637,12 @@ check('prefixed webfinger aliases', ["{$prefix}/sufi/ap/actor"], json_body($r)['
 
 expect('prefix boundary', 404, http('GET', "{$prefix}/sufi2/ap/actor"));
 
-$r = expect('prefixed panel', 200, http('GET', "{$prefix}/sufi/sufi/"));
-check('prefixed login form', true, str_contains($r[2], 'name="password"'));
-
 $jar = '';
-$r = expect('prefixed login', 302, post("{$prefix}/sufi/sufi/", ['password' => 'testpass'], $jar));
+$r = expect('prefixed panel', 200, http('GET', "{$prefix}/sufi/sufi/", null, [], $jar));
+check('prefixed login form', true, str_contains($r[2], 'name="password"'));
+$login_csrf = form_token($r[2]);
+
+$r = expect('prefixed login', 302, post("{$prefix}/sufi/sufi/", ['password' => 'testpass', 'csrf_token' => $login_csrf], $jar));
 check('prefixed login redirect', "{$prefix}/sufi/sufi/", $r[1]['location'][0] ?? null);
 
 $r = expect('prefixed panel with session', 200, http('GET', "{$prefix}/sufi/sufi/", null, [], $jar));
@@ -485,6 +666,44 @@ file_put_contents((string) getenv('SUFI_PREFIX_KEY'), $new_priv);
 $r = expect('actor after key rotation', 200, http('GET', "{$prefix}/sufi/ap/actor"));
 check('rotated key is served', trim(openssl_pkey_get_details($new_res)['key']), trim(json_body($r)['publicKey']['publicKeyPem'] ?? ''));
 check('actor not duplicated', 1, count(db($pdb_path, 'SELECT * FROM Actor')));
+
+// ── maintenance scripts ───────────────────────────────────────────────────────
+
+section('Maintenance');
+
+$schema = db($db_path, 'PRAGMA user_version');
+check('schema version', 3, (int) ($schema[0]['user_version'] ?? 0));
+$columns = array_column(db($db_path, 'PRAGMA table_info(InboxItem)'), 'name');
+check('inbox read column exists', true, in_array('is_read', $columns, true));
+
+$root_dir = dirname(dirname($db_path));
+db($db_path, "INSERT INTO InboxItem (type, actor_uri, data, created_at) VALUES ('Create', 'https://old.example/u/x', '{}', datetime('now', '-200 days'))");
+$old_count = count(db($db_path, 'SELECT * FROM InboxItem'));
+
+$out  = [];
+$code = 0;
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/prune.php') . ' 2>&1', $out, $code);
+check('prune exits cleanly', 0, $code);
+check('old inbox items pruned', $old_count - 1, count(db($db_path, 'SELECT * FROM InboxItem')));
+
+putenv('PHP=' . PHP_BINARY);
+exec('bash ' . escapeshellarg($root_dir . '/scripts/ops/backup.sh') . ' 2>&1', $out, $code);
+check('backup exits cleanly', 0, $code);
+$backups = glob($root_dir . '/sys/backups/sufi-*.sqlite') ?: [];
+check('backup file created', 1, count($backups));
+check('backup is a sqlite database', true, $backups && (new PDO('sqlite:' . $backups[0]))->query('PRAGMA user_version')->fetchColumn() !== false);
+
+// ── login rate limiting (last: it locks the IP out for a while) ───────────────
+
+section('Login rate limiting');
+
+for ($i = 0; $i < 5; $i++) {
+    http('POST', "{$instance}/sufi/", http_build_query(['password' => 'wrong-' . $i]),
+        ['Content-Type: application/x-www-form-urlencoded']);
+}
+$r = http('POST', "{$instance}/sufi/", http_build_query(['password' => 'wrong-again']),
+    ['Content-Type: application/x-www-form-urlencoded']);
+check('blocked after 5 failures', 429, $r[0]);
 
 // ── summary ───────────────────────────────────────────────────────────────────
 

@@ -15,7 +15,7 @@ RewriteEngine On
 RewriteRule ^sufi/sys/ - [F,L]
 
 # Route ActivityPub discovery and API paths to SUFI
-RewriteRule ^\.well-known/(webfinger|host-meta)$ /sufi/index.php [QSA,L]
+RewriteRule ^\.well-known/(webfinger|host-meta|nodeinfo)$ /sufi/index.php [QSA,L]
 RewriteRule ^ap(/.*)?$ /sufi/index.php [QSA,L]
 RewriteRule ^@([^/]+)/?$ /sufi/index.php [QSA,L]
 

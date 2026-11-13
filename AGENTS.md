@@ -44,6 +44,8 @@ sufi/
 ├── deploy/                 # Web server configuration examples
 ├── scripts/test.sh         # Test runner (lint + sandbox + suite)
 ├── scripts/ops/deliver.php # Delivery worker (cron, every minute)
+├── scripts/ops/backup.sh   # Daily SQLite backup
+├── scripts/ops/prune.php   # Inbox retention
 ├── tests/                  # tests/run.php + fake remote server fixture
 └── .htaccess               # Apache rewrite rules
 ```
@@ -62,6 +64,8 @@ sufi/
 | Actor creation | `ensure_actor()` in `sys/database.php` (runs on bootstrap) |
 | Add or fix a test | `tests/run.php` (assertions), `scripts/test.sh` (setup) |
 | Outbound delivery / retries | `sys/delivery.php` + `scripts/ops/deliver.php` |
+| Post formatting / attachments | `format_content()`, `upload_media()` in `index.php` |
+| Schema changes | bump `SCHEMA_VERSION` + add a migration in `init_schema()` |
 | Blocking or moderation | `inbox()` + `action_users()` in `index.php`, `Block` table |
 
 ---
@@ -100,4 +104,5 @@ See `deploy/` for Apache and Nginx configuration examples.
 4. **HTTP Signatures are mandatory.** Every activity posted to the inbox is verified *before* it is stored or acted on — do not move `verifyHTTPSignature()` below database writes. Every outgoing activity must be signed.
 5. **No Composer autoloading.** This project is dependency-free. Include files manually if needed.
 6. **Never enable `$allow_private_fetch` in production.** It disables the HTTPS/private-IP guards on outbound fetches and exists only for local tests.
-7. **Run `./scripts/test.sh` before touching production.** It covers discovery, posting, panel auth, inbox signature rejection and delivery. Not shipping untested federation changes matters more here than in a normal app: a broken signature check can silently defederate you.
+7. **Schema changes need a migration.** Bump `SCHEMA_VERSION` in `sys/database.php` and add the step inside `init_schema()`; never edit old migration steps.
+8. **Run `./scripts/test.sh` before touching production.** It covers discovery, posting, panel auth, inbox signature rejection and delivery. Not shipping untested federation changes matters more here than in a normal app: a broken signature check can silently defederate you.

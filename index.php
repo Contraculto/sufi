@@ -1,6 +1,15 @@
 <?php
 namespace SUFI;
 
+const VERSION = '1.0.0';
+
+const MEDIA_TYPES = [
+    'jpg'  => 'image/jpeg',
+    'png'  => 'image/png',
+    'gif'  => 'image/gif',
+    'webp' => 'image/webp',
+];
+
 require __DIR__ . "/sys/config.php";
 require __DIR__ . "/sys/database.php";
 require __DIR__ . "/sys/delivery.php";
@@ -12,8 +21,16 @@ require __DIR__ . "/templates/webfinger.php";
 $base_path     = rtrim((string) ($base_path ?? ''), '/');
 $base_url      = $base_url ?? "https://{$server}/";
 $cookie_secure = $cookie_secure ?? (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
-$allow_private_fetch = $allow_private_fetch ?? false;
-$outbox_page_size    = (int) ($outbox_page_size ?? 20);
+$allow_private_fetch  = $allow_private_fetch ?? false;
+$outbox_page_size     = (int) ($outbox_page_size ?? 20);
+$max_post_chars       = (int) ($max_post_chars ?? 500);
+$max_upload_bytes     = (int) ($max_upload_bytes ?? 5 * 1024 * 1024);
+$inbox_retention_days = (int) ($inbox_retention_days ?? 90);
+$session_lifetime     = (int) ($session_lifetime ?? 43200);
+$login_max_attempts   = (int) ($login_max_attempts ?? 5);
+$login_window         = (int) ($login_window ?? 900);
+
+security_headers();
 
 if (!file_exists(__DIR__ . '/sys/private.pem')) {
     http_response_code(500);
@@ -41,6 +58,12 @@ session_set_cookie_params([
 session_start();
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
+}
+if (!empty($_SESSION['auth']) && time() - (int) ($_SESSION['seen'] ?? 0) > $session_lifetime) {
+    unset($_SESSION['auth']);
+}
+if (!empty($_SESSION['auth'])) {
+    $_SESSION['seen'] = time();
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -109,8 +132,24 @@ switch ($request) {
         echo Templates\likes($user_data);
         break;
 
+    case "/.well-known/nodeinfo":
+        nodeinfo_discovery();
+        break;
+
+    case "/ap/nodeinfo":
+        nodeinfo();
+        break;
+
     case "/ap/people":
         people();
+        break;
+
+    case "/ap/profile":
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') { update_profile_endpoint(); }
+        break;
+
+    case "/ap/upload":
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') { upload_media(); }
         break;
 
     case "/ap/action":
@@ -152,11 +191,24 @@ switch ($request) {
         }
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
-            if (hash_equals($password, (string) $_POST['password'])) {
+            $limit_key = 'login:' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+
+            if (rate_limit_count($limit_key, $login_window) >= $login_max_attempts) {
+                http_response_code(429);
+                echo 'Too many attempts, try again later';
+                die();
+            }
+
+            $token = (string) ($_POST['csrf_token'] ?? '');
+            $csrf  = !empty($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+            if ($csrf && hash_equals($password, (string) $_POST['password'])) {
+                rate_limit_clear($limit_key);
                 session_regenerate_id(true);
                 $_SESSION['auth'] = true;
+                $_SESSION['seen'] = time();
                 header('Location: ' . $panel_url);
             } else {
+                rate_limit_hit($limit_key);
                 header('Location: ' . $panel_url . '?error=1');
             }
             die();
@@ -168,6 +220,8 @@ switch ($request) {
     default:
         if ($request === "/@{$username}" || $request === "/{$username}" || $request === "/") {
             require __DIR__ . "/templates/home.php";
+        } elseif (preg_match('#^/ap/media/([a-f0-9]{32}\.(?:jpg|png|gif|webp))$#', $request, $m)) {
+            serve_media($m[1]);
         } elseif (preg_match('#^/ap/post/([a-f0-9-]+)$#', $request, $m)) {
             $guid   = $m[1];
             $action = $_POST['action'] ?? ($body['action'] ?? null);
@@ -233,6 +287,24 @@ function inbox() {
         die();
     }
 
+    // Responses to Follows we sent: Accept confirms, Reject removes.
+    if ($type === "Accept" || $type === "Reject") {
+        $object    = $body["object"] ?? null;
+        $follow_id = is_array($object) ? ($object["id"] ?? null) : (is_string($object) ? $object : null);
+
+        if (is_string($follow_id) && $follow_id !== ''
+            && System\Database\get_following_by_follow_id($db_handler, $follow_id)) {
+            if ($type === "Accept") {
+                System\Database\set_following_state($db_handler, $follow_id, 'accepted');
+            } else {
+                System\Database\remove_following_by_follow_id($db_handler, $follow_id);
+            }
+        }
+
+        http_response_code(202);
+        die();
+    }
+
     // Store incoming interactions (all verified at this point)
     if (in_array($type, ["Create", "Announce", "Like"], true)) {
         $obj     = $body["object"] ?? null;
@@ -241,7 +313,10 @@ function inbox() {
         if ($type === "Like" && is_string($obj_uri) && $obj_uri !== '') {
             System\Database\add_like($db_handler, $obj_uri, $actor_uri);
         }
-        System\Database\add_inbox_item($db_handler, $type, $actor_uri, $obj_uri, $body);
+        System\Database\add_inbox_item(
+            $db_handler, $type, $actor_uri, $obj_uri, $body,
+            actor_handle($actor_uri, $GLOBALS['sufi_actor'] ?? [])
+        );
         http_response_code(202);
         die();
     }
@@ -257,7 +332,9 @@ function inbox() {
             die();
         }
 
-        System\Database\add_follower($db_handler, $actor_uri, $follower_inbox, $actor_data ?? []);
+        System\Database\add_follower(
+            $db_handler, $actor_uri, $follower_inbox, $actor_data ?? [], $body["id"] ?? null
+        );
 
         $guid    = uuid();
         $message = [
@@ -303,10 +380,16 @@ function inbox_items() {
         return;
     }
 
-    $items = System\Database\get_inbox_items($db_handler);
+    $items = System\Database\get_inbox_items($db_handler, 50, !empty($_GET['unread']));
     foreach ($items as &$item) {
         $item['data'] = json_decode($item['data'], true);
     }
+
+    // Read before marking, so the panel can show what was unread.
+    if (!empty($_GET['mark_read'])) {
+        System\Database\mark_inbox_read($db_handler);
+    }
+
     header('Content-Type: application/json');
     echo json_encode($items);
 }
@@ -335,19 +418,17 @@ function people_list(array $rows) {
     $people = [];
 
     foreach ($rows as $row) {
-        $data  = json_decode($row['data'] ?? '{}', true) ?: [];
-        $parts = parse_url((string) $row['actor_uri']);
-        $host  = ($parts['host'] ?? '') . (isset($parts['port']) ? ':' . $parts['port'] : '');
-        $user  = $data['preferredUsername'] ?? basename((string) ($parts['path'] ?? ''));
+        $data = json_decode($row['data'] ?? '{}', true) ?: [];
 
         $url = $data['url'] ?? ($data['id'] ?? $row['actor_uri']);
         if (!is_string($url)) { $url = $row['actor_uri']; }
 
         $people[] = [
             'uri'    => $row['actor_uri'],
-            'handle' => '@' . $user . '@' . $host,
+            'handle' => actor_handle($row['actor_uri'], $data),
             'name'   => is_string($data['name'] ?? null) ? $data['name'] : '',
             'url'    => $url,
+            'state'  => $row['state'] ?? 'accepted',
         ];
     }
 
@@ -359,7 +440,7 @@ function people_list(array $rows) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function create_post_endpoint() {
-    global $body;
+    global $body, $max_post_chars;
 
     if (!panel_auth()) {
         http_response_code(401);
@@ -368,21 +449,38 @@ function create_post_endpoint() {
     }
     require_csrf_if_session();
 
-    $content  = $_POST['content']     ?? ($body['content']     ?? null);
-    $in_reply = $_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? null);
+    $content     = trim((string) ($_POST['content']     ?? ($body['content']     ?? '')));
+    $in_reply    = trim((string) ($_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? '')));
+    $attachment  = trim((string) ($_POST['attachment']  ?? ($body['attachment']  ?? '')));
+    $description = trim((string) ($_POST['attachment_description'] ?? ($body['attachment_description'] ?? '')));
 
-    if (!$content) {
+    if ($content === '' && $attachment === '') {
         http_response_code(400);
         echo "Missing content";
         return;
     }
+    if (mb_strlen($content) > $max_post_chars) {
+        http_response_code(400);
+        echo "Post is longer than {$max_post_chars} characters";
+        return;
+    }
+    if ($attachment !== '' && attachment_from_url($attachment) === null) {
+        http_response_code(400);
+        echo "Invalid attachment";
+        return;
+    }
+    if ($in_reply !== '' && !preg_match('#^https?://#i', $in_reply)) {
+        http_response_code(400);
+        echo "Invalid in_reply_to";
+        return;
+    }
 
-    $activity = create_post($content, $in_reply);
+    $activity = create_post($content, $in_reply ?: null, $attachment ?: null, $description ?: null);
     header('Content-Type: application/activity+json; charset=utf-8');
     echo json_encode($activity);
 }
 
-function create_post($content, $in_reply_to = null) {
+function create_post($content, $in_reply_to = null, $attachment = null, $description = null) {
     global $base_url, $db_handler;
 
     $guid      = uuid();
@@ -395,11 +493,17 @@ function create_post($content, $in_reply_to = null) {
         "type"         => "Note",
         "published"    => $published,
         "attributedTo" => "{$base}ap/actor",
-        "content"      => $content,
+        "content"      => format_content($content),
         "to"           => ["https://www.w3.org/ns/activitystreams#Public"],
         "cc"           => ["{$base}ap/followers"],
     ];
     if ($in_reply_to) { $note["inReplyTo"] = $in_reply_to; }
+
+    $media = $attachment ? attachment_from_url($attachment) : null;
+    if ($media) {
+        if ($description !== null) { $media['name'] = $description; }
+        $note['attachment'] = [$media];
+    }
 
     $activity = [
         "@context"  => "https://www.w3.org/ns/activitystreams",
@@ -477,13 +581,18 @@ function delete_post_endpoint($guid) {
 }
 
 function update_post_endpoint($guid) {
-    global $body, $base_url, $db_handler;
+    global $body, $base_url, $db_handler, $max_post_chars;
 
     if (!panel_auth()) { http_response_code(401); echo "Unauthorized"; return; }
     require_csrf_if_session();
 
-    $content = $_POST['content'] ?? ($body['content'] ?? null);
-    if (!$content) { http_response_code(400); echo "Missing content"; return; }
+    $content = trim((string) ($_POST['content'] ?? ($body['content'] ?? '')));
+    if ($content === '') { http_response_code(400); echo "Missing content"; return; }
+    if (mb_strlen($content) > $max_post_chars) {
+        http_response_code(400);
+        echo "Post is longer than {$max_post_chars} characters";
+        return;
+    }
 
     $post = System\Database\get_post($db_handler, $guid);
     if (!$post) { http_response_code(404); echo "Not found"; return; }
@@ -492,6 +601,10 @@ function update_post_endpoint($guid) {
     $base      = $base_url;
     $actor_url = "{$base}ap/actor";
 
+    $previous = json_decode((string) $post['data'], true) ?: [];
+    $previous = $previous['object'] ?? $previous;
+    $media    = $previous['attachment'] ?? null;
+
     $note = [
         "@context"     => "https://www.w3.org/ns/activitystreams",
         "id"           => "{$base}ap/post/{$guid}",
@@ -499,10 +612,12 @@ function update_post_endpoint($guid) {
         "published"    => $post['published'],
         "updated"      => $updated,
         "attributedTo" => $actor_url,
-        "content"      => $content,
+        "content"      => format_content($content),
         "to"           => ["https://www.w3.org/ns/activitystreams#Public"],
         "cc"           => ["{$base}ap/followers"],
     ];
+    if (!empty($previous['inReplyTo'])) { $note['inReplyTo'] = $previous['inReplyTo']; }
+    if (is_array($media)) { $note['attachment'] = $media; }
     $activity = [
         "@context"  => "https://www.w3.org/ns/activitystreams",
         "id"        => "{$base}ap/activity/" . uuid(),
@@ -619,7 +734,9 @@ function action_users() {
 
     if ($action === "Follow") {
         $profile_data = getDataFromURl($profileUrl);
-        System\Database\add_following($db_handler, $profileUrl, $profileInbox, $profile_data ?? []);
+        System\Database\add_following(
+            $db_handler, $profileUrl, $profileInbox, $profile_data ?? [], $message['id'], 'pending'
+        );
     } elseif ($action === "Unfollow") {
         System\Database\remove_following($db_handler, $profileUrl);
     } elseif ($action === "Block") {
@@ -669,6 +786,16 @@ function undo($message) {
     $object_type = is_array($object) ? ($object["type"] ?? null) : null;
     $actor       = is_array($object) ? ($object["actor"] ?? $message["actor"]) : ($message["actor"] ?? null);
 
+    // Servers may send the Follow/Block activity id instead of the object.
+    if (is_string($object) && $object !== '') {
+        $follower = System\Database\get_follower_by_follow_id($db_handler, $object);
+        if ($follower) {
+            System\Database\remove_follower($db_handler, $follower['actor_uri']);
+        }
+        System\Database\remove_following_by_follow_id($db_handler, $object);
+        return;
+    }
+
     if (!is_string($actor) || $actor === '') {
         return;
     }
@@ -692,7 +819,6 @@ function verifyHTTPSignature() {
     global $input, $body;
 
     $type      = urlencode($body["type"] ?? "unknown");
-    $method    = strtoupper($_SERVER["REQUEST_METHOD"] ?? "GET");
     $headers   = array_change_key_case(get_request_headers(), CASE_LOWER);
     $actor_uri = $body["actor"] ?? null;
 
@@ -704,7 +830,6 @@ function verifyHTTPSignature() {
     if (!is_string($actor_uri) || $actor_uri === "") {
         return $fail("NoActor");
     }
-
     if (!isset($headers["date"])) {
         return $fail("NoDate", print_r($headers, true));
     }
@@ -713,11 +838,9 @@ function verifyHTTPSignature() {
     if (!$header_datetime) {
         return $fail("BadDate", $headers["date"]);
     }
-
     if (abs(time() - $header_datetime->getTimestamp()) > 3600) {
         return $fail("DateDrift", $headers["date"]);
     }
-
     if (isset($body["published"]) && is_string($body["published"])) {
         try {
             $published = new \DateTime($body["published"]);
@@ -729,6 +852,12 @@ function verifyHTTPSignature() {
         }
     }
 
+    // RFC 9421 message signatures (Mastodon 4.3+, some others).
+    if (!empty($headers["signature-input"]) && !empty($headers["signature"])) {
+        return verify_rfc9421($headers, $actor_uri, $fail);
+    }
+
+    // Legacy draft-cavage signature (still the most widely deployed).
     $sig_header = $headers["signature"] ?? null;
     if (!$sig_header) {
         return $fail("NoSignature");
@@ -743,16 +872,13 @@ function verifyHTTPSignature() {
 
     $signed_headers = preg_split('/\s+/', strtolower(trim($parts["headers"])));
 
-    // The digest must be present and covered by the signature, otherwise the
-    // body could be swapped for something the actor never sent.
-    if ($method === "POST") {
+    if (($_SERVER["REQUEST_METHOD"] ?? "GET") === "POST") {
         if (!isset($headers["digest"])) {
             return $fail("NoDigest");
         }
         if (!in_array("digest", $signed_headers, true)) {
             return $fail("DigestUnsigned", $parts["headers"]);
         }
-
         [$digest_algorithm, $digest_hash] = array_pad(explode("=", $headers["digest"], 2), 2, "");
         $algo = match (strtoupper($digest_algorithm)) {
             "SHA-256", "HS2019" => "sha256",
@@ -767,46 +893,265 @@ function verifyHTTPSignature() {
     $signed = "";
     foreach ($signed_headers as $h) {
         if ($h === "(request-target)") {
-            $signed .= "(request-target): " . strtolower($method) . " " . $_SERVER["REQUEST_URI"] . "\n";
+            $signed .= "(request-target): " . strtolower($_SERVER["REQUEST_METHOD"] ?? "get")
+                . " " . $_SERVER["REQUEST_URI"] . "\n";
         } elseif ($h === "host") {
             $signed .= "host: " . strtolower($_SERVER["HTTP_HOST"] ?? "") . "\n";
         } else {
             $signed .= "{$h}: " . ($headers[$h] ?? "") . "\n";
         }
     }
-    $signed = rtrim($signed);
 
-    $key_data   = getDataFromURl(strtok($parts["keyId"], "#"));
+    return verify_with_key(
+        rtrim($signed), $parts["signature"], $parts["keyId"], $actor_uri,
+        strtolower($parts["algorithm"] ?? "rsa-sha256"), $fail
+    );
+}
+
+/** RFC 9421: Signature-Input + Signature: label=:base64: */
+function verify_rfc9421($headers, $actor_uri, callable $fail) {
+    global $input;
+
+    $input_hdr = trim((string) $headers["signature-input"]);
+    $sig_hdr   = trim((string) $headers["signature"]);
+
+    if (!preg_match('/^([A-Za-z0-9_-]+)=\(([^)]*)\)(.*)$/s', $input_hdr, $m)) {
+        return $fail("MalformedInput", $input_hdr);
+    }
+
+    $label      = $m[1];
+    $params     = substr($input_hdr, strlen($label) + 1);
+    $rest       = $m[3];
+    $components = array_values(array_filter(array_map(
+        fn($c) => trim($c, ' "'),
+        preg_split('/\s+/', trim($m[2])) ?: []
+    )));
+
+    $key_id = preg_match('/keyid="([^"]+)"/', $rest, $km) ? $km[1] : '';
+    $alg    = preg_match('/alg="([^"]+)"/', $rest, $am) ? $am[1] : 'rsa-v1_5-sha256';
+    if ($key_id === '') {
+        return $fail("NoKeyId", $input_hdr);
+    }
+
+    if (!preg_match('/' . preg_quote($label, '/') . '=:([^:]+):/', $sig_hdr, $sm)) {
+        return $fail("MalformedSignature", $sig_hdr);
+    }
+
+    if (in_array("content-digest", $components, true)) {
+        $digest = (string) ($headers["content-digest"] ?? "");
+        if (!preg_match('/sha-256=:([^:]+):/', $digest, $dm)) {
+            return $fail("NoContentDigest", $digest);
+        }
+        if (!hash_equals($dm[1], base64_encode(hash('sha256', $input, true)))) {
+            return $fail("ContentDigestFail");
+        }
+    }
+
+    $lines = [];
+    foreach ($components as $name) {
+        $value = match ($name) {
+            "@method"     => strtoupper($_SERVER["REQUEST_METHOD"] ?? "POST"),
+            "@path"       => (string) parse_url($_SERVER["REQUEST_URI"] ?? "/", PHP_URL_PATH),
+            "@query"      => "?" . (parse_url($_SERVER["REQUEST_URI"] ?? "/", PHP_URL_QUERY) ?? ""),
+            "@authority"  => (string) ($_SERVER["HTTP_HOST"] ?? ""),
+            "@target-uri" => "https://" . ($_SERVER["HTTP_HOST"] ?? "") . ($_SERVER["REQUEST_URI"] ?? "/"),
+            "host"        => (string) ($_SERVER["HTTP_HOST"] ?? ""),
+            default       => (string) ($headers[$name] ?? ""),
+        };
+        $lines[] = "\"{$name}\": {$value}";
+    }
+    $lines[] = "\"@signature-params\": {$params}";
+
+    return verify_with_key(implode("\n", $lines), $sm[1], $key_id, $actor_uri, $alg, $fail);
+}
+
+/** Shared key lookup and openssl verification for both signature schemes. */
+function verify_with_key($signed, $signature_b64, $key_id, $actor_uri, $algorithm, callable $fail) {
+    $key_data   = getDataFromURl(strtok($key_id, '#'));
     $public_key = $key_data["publicKey"]["publicKeyPem"] ?? null;
     if (!$public_key) {
-        return $fail("NoPublicKey", $parts["keyId"]);
+        return $fail("NoPublicKey", $key_id);
     }
 
-    $actor_data    = getDataFromURl($actor_uri) ?: [];
+    $actor_data = getDataFromURl($actor_uri) ?: [];
+    $GLOBALS['sufi_actor'] = $actor_data;
     $actor_pub_key = $actor_data["publicKey"]["publicKeyPem"] ?? null;
     if (!$actor_pub_key || !hash_equals($public_key, $actor_pub_key)) {
-        return $fail("KeyMismatch", $parts["keyId"]);
+        return $fail("KeyMismatch", $key_id);
     }
 
-    // keyId must live on the actor's host, otherwise one instance could sign
-    // activities on behalf of an actor it does not own.
-    $key_host   = strtolower((string) parse_url($parts["keyId"], PHP_URL_HOST));
+    $key_host   = strtolower((string) parse_url($key_id, PHP_URL_HOST));
     $actor_host = strtolower((string) parse_url($actor_uri, PHP_URL_HOST));
     if ($key_host === "" || $key_host !== $actor_host) {
-        return $fail("HostMismatch", "keyId: {$parts["keyId"]} actor: {$actor_uri}");
+        return $fail("HostMismatch", "keyId: {$key_id} actor: {$actor_uri}");
     }
 
-    $algorithm = match (strtolower($parts["algorithm"] ?? "rsa-sha256")) {
-        "rsa-sha512" => OPENSSL_ALGO_SHA512,
-        default      => OPENSSL_ALGO_SHA256,
+    $openssl_alg = match (strtolower($algorithm)) {
+        "rsa-sha512", "rsa-v1_5-sha512", "rsa-pss-sha512" => OPENSSL_ALGO_SHA512,
+        default => OPENSSL_ALGO_SHA256,
     };
 
-    $result = openssl_verify($signed, base64_decode($parts["signature"]), $public_key, $algorithm);
+    $result = openssl_verify($signed, base64_decode($signature_b64), $public_key, $openssl_alg);
     if ($result !== 1) {
         return $fail("Invalid", "openssl: {$result}");
     }
 
     return true;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// NodeInfo
+// ════════════════════════════════════════════════════════════════════════════════
+
+function nodeinfo_discovery() {
+    global $base_url;
+
+    header('Content-Type: application/jrd+json; charset=utf-8');
+    echo json_encode(['links' => [[
+        'rel'  => 'http://nodeinfo.diaspora.software/ns/schema/2.1',
+        'href' => "{$base_url}ap/nodeinfo",
+    ]]]);
+}
+
+function nodeinfo() {
+    global $db_handler, $user_data;
+
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'version'           => '2.1',
+        'software'          => ['name' => 'sufi', 'version' => VERSION],
+        'protocols'         => ['activitypub'],
+        'services'          => ['inbound' => [], 'outbound' => []],
+        'openRegistrations' => false,
+        'usage'             => [
+            'users'      => ['total' => 1, 'activeMonth' => 1, 'activeHalfyear' => 1],
+            'localPosts' => System\Database\count_posts($db_handler),
+        ],
+        'metadata'          => ['nodeName' => $user_data['name'] ?? ''],
+    ]);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Media
+// ════════════════════════════════════════════════════════════════════════════════
+
+function serve_media($name) {
+    $path = __DIR__ . '/sys/uploads/' . $name;
+    $ext  = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+
+    if (!isset(MEDIA_TYPES[$ext]) || !is_file($path)) {
+        http_response_code(404);
+        echo 'Not found';
+        return;
+    }
+
+    header('Content-Type: ' . MEDIA_TYPES[$ext]);
+    header('Content-Length: ' . filesize($path));
+    header('Cache-Control: public, max-age=31536000, immutable');
+    readfile($path);
+}
+
+function upload_media() {
+    global $base_url, $max_upload_bytes;
+
+    if (!panel_auth()) { http_response_code(401); echo 'Unauthorized'; return; }
+    require_csrf_if_session();
+
+    $file = $_FILES['file'] ?? null;
+    if (!$file || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        http_response_code(400);
+        echo 'No file uploaded';
+        return;
+    }
+    if ((int) $file['size'] > $max_upload_bytes) {
+        http_response_code(413);
+        echo 'File too large';
+        return;
+    }
+
+    $info = @getimagesize($file['tmp_name']);
+    $ext  = match ($info[2] ?? null) {
+        IMAGETYPE_JPEG => 'jpg',
+        IMAGETYPE_PNG  => 'png',
+        IMAGETYPE_GIF  => 'gif',
+        IMAGETYPE_WEBP => 'webp',
+        default        => null,
+    };
+    if ($ext === null) {
+        http_response_code(400);
+        echo 'Only JPEG, PNG, GIF or WebP images are allowed';
+        return;
+    }
+
+    $dir = __DIR__ . '/sys/uploads';
+    if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
+
+    $name = bin2hex(random_bytes(16)) . '.' . $ext;
+    if (!move_uploaded_file($file['tmp_name'], "{$dir}/{$name}")) {
+        http_response_code(500);
+        echo 'Could not store the file';
+        return;
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'url'       => "{$base_url}ap/media/{$name}",
+        'mediaType' => MEDIA_TYPES[$ext],
+        'name'      => (string) ($file['name'] ?? ''),
+    ]);
+}
+
+/** Resolve a local /ap/media/ URL into an ActivityStreams attachment, or null. */
+function attachment_from_url($url) {
+    global $base_url;
+
+    $prefix = "{$base_url}ap/media/";
+    if (!is_string($url) || !str_starts_with($url, $prefix)) { return null; }
+
+    $name = substr($url, strlen($prefix));
+    if (!preg_match('#^[a-f0-9]{32}\.(?:jpg|png|gif|webp)$#', $name)) { return null; }
+    if (!is_file(__DIR__ . '/sys/uploads/' . $name)) { return null; }
+
+    return [
+        'type'      => 'Document',
+        'mediaType' => MEDIA_TYPES[strtolower(pathinfo($name, PATHINFO_EXTENSION))],
+        'url'       => $url,
+    ];
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Profile
+// ════════════════════════════════════════════════════════════════════════════════
+
+function update_profile_endpoint() {
+    global $db_handler;
+
+    if (!panel_auth()) { http_response_code(401); echo 'Unauthorized'; return; }
+    require_csrf_if_session();
+
+    $name    = trim((string) ($_POST['name'] ?? ''));
+    $summary = trim((string) ($_POST['summary'] ?? ''));
+    $icon    = trim((string) ($_POST['icon'] ?? ''));
+
+    if ($name === '' || mb_strlen($name) > 100) {
+        http_response_code(400);
+        echo 'Invalid name';
+        return;
+    }
+    if (mb_strlen($summary) > 2000) {
+        http_response_code(400);
+        echo 'Summary too long';
+        return;
+    }
+    if ($icon !== '' && !preg_match('#^https?://#i', $icon)) {
+        http_response_code(400);
+        echo 'Invalid avatar URL';
+        return;
+    }
+
+    System\Database\update_actor_profile($db_handler, $name, $summary, $icon);
+    header('Content-Type: application/json');
+    echo json_encode(['ok' => true]);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -836,6 +1181,35 @@ function get_request_headers(): array {
 function request_password(): ?string {
     global $body;
     return $_POST['password'] ?? ($body['password'] ?? null);
+}
+
+function security_headers() {
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: no-referrer');
+}
+
+/**
+ * Turn plain text from the composer into the HTML that ActivityStreams expects:
+ * escaped, URLs linked, paragraphs and line breaks preserved.
+ */
+function format_content($text) {
+    $html = htmlspecialchars(trim((string) $text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+    $html = preg_replace_callback('~https?://[^\s<]+~i', function ($m) {
+        $url    = rtrim($m[0], '.,;:!?)');
+        $suffix = substr($m[0], strlen($url));
+        return '<a href="' . $url . '" rel="nofollow noopener noreferrer" target="_blank">'
+            . $url . '</a>' . $suffix;
+    }, $html);
+
+    $paragraphs = preg_split('/\n{2,}/', $html) ?: [$html];
+    $paragraphs = array_map(
+        fn($p) => '<p>' . str_replace("\n", '<br>', trim($p)) . '</p>',
+        array_filter($paragraphs, fn($p) => trim($p) !== '')
+    );
+
+    return implode('', $paragraphs);
 }
 
 function panel_auth() {

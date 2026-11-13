@@ -33,6 +33,15 @@ $allow_private_fetch = false;
 // Posts per page in /ap/outbox.
 $outbox_page_size = 20;
 
+// Post limits.
+$max_post_chars   = 500;
+$max_upload_bytes = 5 * 1024 * 1024;
+
+// Ops: inbox retention (days), panel idle logout (seconds), login rate limit.
+$inbox_retention_days = 90;
+$session_lifetime     = 43200;
+$login_max_attempts   = 5;
+
 // RSA private key — generate with:
 //   openssl genrsa -out sys/private.pem 2048
 // Then extract public key:

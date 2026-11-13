@@ -135,6 +135,50 @@ function sendToFollowers($message) {
     if ($queued) { schedule_drain(); }
 }
 
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+
+function rate_limit_file($key) {
+    global $directories;
+
+    $dir = dirname($directories['logs'] ?? __DIR__) . '/cache';
+    if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
+
+    return $dir . '/ratelimit-' . sha1($key) . '.json';
+}
+
+function rate_limit_events($key, $window) {
+    $hits = json_decode((string) @file_get_contents(rate_limit_file($key)), true);
+    if (!is_array($hits)) { return []; }
+
+    $cutoff = time() - max(1, (int) $window);
+    return array_values(array_filter($hits, fn($t) => (int) $t > $cutoff));
+}
+
+function rate_limit_count($key, $window) {
+    return count(rate_limit_events($key, $window));
+}
+
+function rate_limit_hit($key) {
+    $hits   = rate_limit_events($key, 86400);
+    $hits[] = time();
+    @file_put_contents(rate_limit_file($key), json_encode($hits), LOCK_EX);
+}
+
+function rate_limit_clear($key) {
+    @unlink(rate_limit_file($key));
+}
+
+// ── Actor helpers ─────────────────────────────────────────────────────────────
+
+/** "@user@host" from an actor URI, preferring the actor's own username. */
+function actor_handle($uri, $doc = []) {
+    $parts = parse_url((string) $uri);
+    $host  = ($parts['host'] ?? '') . (isset($parts['port']) ? ':' . $parts['port'] : '');
+    $user  = $doc['preferredUsername'] ?? basename((string) ($parts['path'] ?? ''));
+
+    return '@' . $user . '@' . $host;
+}
+
 /** Backoff schedule, in seconds, indexed by attempt number. */
 function next_delivery_time($attempts) {
     $delays = [60, 300, 900, 3600, 21600];

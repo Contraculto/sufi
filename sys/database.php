@@ -14,13 +14,47 @@ function connect_database() {
     }
 }
 
+const SCHEMA_VERSION = 3;
+
 function init_schema($DBH) {
-    $sql = file_get_contents(__DIR__ . '/sufi.sql');
+    $version = (int) $DBH->query('PRAGMA user_version')->fetchColumn();
+    if ($version >= SCHEMA_VERSION) { return; }
+
+    if ($version < 1) {
+        apply_sql_file($DBH, __DIR__ . '/sufi.sql');
+    }
+
+    if ($version < 3) {
+        // v2: inbox read state + actor handle
+        add_column($DBH, 'InboxItem', 'actor_handle', "TEXT NOT NULL DEFAULT ''");
+        add_column($DBH, 'InboxItem', 'is_read', 'INTEGER NOT NULL DEFAULT 0');
+        // v3: follow activity ids, so Accept/Reject and Undo-by-id work
+        add_column($DBH, 'Follower', 'follow_id', 'TEXT');
+        add_column($DBH, 'Following', 'follow_id', 'TEXT');
+        add_column($DBH, 'Following', 'state', "TEXT NOT NULL DEFAULT 'accepted'");
+    }
+
+    $DBH->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
+}
+
+function apply_sql_file($DBH, $file) {
+    $sql = (string) file_get_contents($file);
     $sql = preg_replace('/\/\*.*?\*\//s', '', $sql);
     $sql = preg_replace('/--[^\n]*/', '', $sql);
     foreach (array_filter(array_map('trim', explode(';', $sql))) as $stmt) {
-        try { $DBH->exec($stmt); } catch (\PDOException $e) { /* already exists */ }
+        try {
+            $DBH->exec($stmt);
+        } catch (\PDOException $e) {
+            // table already exists
+        }
     }
+}
+
+function add_column($DBH, $table, $column, $definition) {
+    foreach ($DBH->query("PRAGMA table_info({$table})")->fetchAll(\PDO::FETCH_ASSOC) as $existing) {
+        if (($existing['name'] ?? '') === $column) { return; }
+    }
+    $DBH->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
 }
 
 function get($DBH, $query, $params = []) {
@@ -50,6 +84,11 @@ function get_user_data($DBH) {
  * public key synced — so a new handle or a rotated private.pem needs no manual
  * SQL. Profile fields (name, summary, icon) are only seeded on creation.
  */
+function update_actor_profile($DBH, $name, $summary, $icon) {
+    run($DBH, "UPDATE Actor SET name = ?, summary = ?, icon = ? WHERE id = 1",
+        [$name, $summary, $icon]);
+}
+
 function ensure_actor($DBH, $server, $username, $base_url, $private_key, $name, $summary, $icon) {
     $public_key = '';
     if (is_string($private_key) && $private_key !== ''
@@ -96,11 +135,16 @@ function get_follower($DBH, $actor_uri) {
     return $rows[0] ?? null;
 }
 
-function add_follower($DBH, $actor_uri, $inbox, $data) {
+function add_follower($DBH, $actor_uri, $inbox, $data, $follow_id = null) {
     run($DBH,
-        "INSERT OR REPLACE INTO Follower (actor_uri, inbox, data) VALUES (?, ?, ?)",
-        [$actor_uri, $inbox, json_encode($data)]
+        "INSERT OR REPLACE INTO Follower (actor_uri, inbox, data, follow_id) VALUES (?, ?, ?, ?)",
+        [$actor_uri, $inbox, json_encode($data), $follow_id]
     );
+}
+
+function get_follower_by_follow_id($DBH, $follow_id) {
+    $rows = get($DBH, "SELECT * FROM Follower WHERE follow_id = ? LIMIT 1", [$follow_id]);
+    return $rows[0] ?? null;
 }
 
 function remove_follower($DBH, $actor_uri) {
@@ -118,11 +162,24 @@ function get_following_actor($DBH, $actor_uri) {
     return $rows[0] ?? null;
 }
 
-function add_following($DBH, $actor_uri, $inbox, $data) {
+function add_following($DBH, $actor_uri, $inbox, $data, $follow_id = null, $state = 'pending') {
     run($DBH,
-        "INSERT OR REPLACE INTO Following (actor_uri, inbox, data) VALUES (?, ?, ?)",
-        [$actor_uri, $inbox, json_encode($data)]
+        "INSERT OR REPLACE INTO Following (actor_uri, inbox, data, follow_id, state) VALUES (?, ?, ?, ?, ?)",
+        [$actor_uri, $inbox, json_encode($data), $follow_id, $state]
     );
+}
+
+function get_following_by_follow_id($DBH, $follow_id) {
+    $rows = get($DBH, "SELECT * FROM Following WHERE follow_id = ? LIMIT 1", [$follow_id]);
+    return $rows[0] ?? null;
+}
+
+function set_following_state($DBH, $follow_id, $state) {
+    run($DBH, "UPDATE Following SET state = ? WHERE follow_id = ?", [$state, $follow_id]);
+}
+
+function remove_following_by_follow_id($DBH, $follow_id) {
+    run($DBH, "DELETE FROM Following WHERE follow_id = ?", [$follow_id]);
 }
 
 function remove_following($DBH, $actor_uri) {
@@ -258,16 +315,31 @@ function update_post($DBH, $guid, $content, $data) {
 
 // ── Inbox items ───────────────────────────────────────────────────────────────
 
-function get_inbox_items($DBH, $limit = 50) {
+function get_inbox_items($DBH, $limit = 50, $unread_only = false) {
+    $where = $unread_only ? 'WHERE is_read = 0' : '';
     return get($DBH,
-        "SELECT * FROM InboxItem ORDER BY created_at DESC LIMIT ?",
-        [$limit]
+        "SELECT * FROM InboxItem {$where} ORDER BY id DESC LIMIT ?",
+        [(int) $limit]
     );
 }
 
-function add_inbox_item($DBH, $type, $actor_uri, $object_uri, $data) {
+function add_inbox_item($DBH, $type, $actor_uri, $object_uri, $data, $actor_handle = '') {
     run($DBH,
-        "INSERT INTO InboxItem (type, actor_uri, object_uri, data) VALUES (?, ?, ?, ?)",
-        [$type, $actor_uri, $object_uri, json_encode($data)]
+        "INSERT INTO InboxItem (type, actor_uri, actor_handle, object_uri, data) VALUES (?, ?, ?, ?, ?)",
+        [$type, $actor_uri, $actor_handle, $object_uri, json_encode($data)]
     );
+}
+
+function mark_inbox_read($DBH) {
+    run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE is_read = 0");
+}
+
+function count_unread_inbox($DBH) {
+    return (int) $DBH->query("SELECT COUNT(*) FROM InboxItem WHERE is_read = 0")->fetchColumn();
+}
+
+function prune_inbox($DBH, $days) {
+    $days = max(1, (int) $days);
+    run($DBH, "DELETE FROM InboxItem WHERE created_at < datetime('now', ?)", ["-{$days} days"]);
+    return $DBH->query("SELECT changes()")->fetchColumn();
 }
