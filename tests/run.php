@@ -158,6 +158,25 @@ function token(string $html): ?string {
     return preg_match('/const CSRF_TOKEN = "([^"]+)"/', $html, $m) ? $m[1] : null;
 }
 
+function png_chunk(string $type, string $data): string {
+    return pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+}
+
+function png_bytes(int $width, int $height): string {
+    $raw = str_repeat("\x00" . str_repeat("\x00", $width), $height);
+    return "\x89PNG\r\n\x1a\n"
+        . png_chunk('IHDR', pack('NNCCCCC', $width, $height, 8, 0, 0, 0, 0))
+        . png_chunk('IDAT', gzcompress($raw, 9))
+        . png_chunk('IEND', '');
+}
+
+/** Header-only PNG: enough for getimagesize, no image data. */
+function png_header(int $width, int $height): string {
+    return "\x89PNG\r\n\x1a\n"
+        . png_chunk('IHDR', pack('NNCCCCC', $width, $height, 8, 0, 0, 0, 0))
+        . png_chunk('IEND', '');
+}
+
 function multipart(array $fields, string $filename, string $type, string $data): array {
     $boundary = '----sufi' . bin2hex(random_bytes(8));
     $body     = '';
@@ -350,6 +369,17 @@ check('panel BASE is instance root', true, str_contains($r[2], 'const BASE = ' .
 $csrf = token($r[2]);
 check('panel exposes csrf token', true, $csrf !== null);
 
+$node = trim((string) @shell_exec('command -v node 2>/dev/null'));
+if ($node !== '' && preg_match('#<script>(.*?)</script>#s', $r[2], $script_match)) {
+    $script_file = tempnam(sys_get_temp_dir(), 'sufi-js-');
+    file_put_contents($script_file, $script_match[1]);
+    $js_output = [];
+    $js_code   = 0;
+    exec(escapeshellarg($node) . ' --check ' . escapeshellarg($script_file) . ' 2>&1', $js_output, $js_code);
+    check('panel javascript parses', 0, $js_code);
+    unlink($script_file);
+}
+
 $r = expect('people endpoint', 200, http('GET', "{$instance}/ap/people", null, [], $jar));
 check('no followers yet', [], json_body($r)['followers'] ?? null);
 check('not following anyone yet', [], json_body($r)['following'] ?? null);
@@ -422,6 +452,24 @@ check('upload exists before delete', true, is_file($media2_file));
 expect('delete multi-attachment post', 200, post("{$instance}/ap/post/{$multi_guid}", ['action' => 'delete', 'password' => 'testpass']));
 clearstatcache();
 check('attachment removed with post', false, is_file($media2_file));
+
+// Dimension limits: large images are downscaled when GD is available, and
+// decompression bombs are rejected before decoding.
+[$body, $type] = multipart([], 'wide.png', 'image/png', png_bytes(3000, 100));
+$r = expect('wide image upload', 200, http('POST', "{$instance}/ap/upload", $body,
+    [$type, 'X-CSRF-Token: ' . $csrf], $jar));
+$wide = json_body($r);
+$wide_file = $root_dir . '/sys/uploads/' . basename((string) parse_url($wide['url'], PHP_URL_PATH));
+$wide_dim  = getimagesize($wide_file);
+if (function_exists('imagecreatetruecolor')) {
+    check('wide image downscaled', 2560, $wide_dim[0] ?? null);
+} else {
+    check('wide image kept without gd', 3000, $wide_dim[0] ?? null);
+}
+
+[$body, $type] = multipart([], 'huge.png', 'image/png', png_header(8000, 8000));
+$r = http('POST', "{$instance}/ap/upload", $body, [$type, 'X-CSRF-Token: ' . $csrf], $jar);
+check('decompression bomb rejected', 413, $r[0]);
 
 expect('delete post', 200, post("{$instance}/ap/post/{$guid}", ['action' => 'delete', 'password' => 'testpass']));
 expect('deleted post is gone', 404, http('GET', "{$instance}/ap/post/{$guid}"));
@@ -898,6 +946,12 @@ file_put_contents($orphan, 'x');
 touch($orphan, time() - 2 * 86400);
 exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/prune.php') . ' 2>&1', $out, $code);
 check('orphaned upload removed', false, is_file($orphan));
+
+$out  = [];
+$code = 0;
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/health.php') . ' 2>&1', $out, $code);
+check('health script exits cleanly', 0, $code);
+check('health reports integrity', true, str_contains(implode("\n", $out), 'integrity'));
 
 $posts_before = count(db($db_path, 'SELECT * FROM Post'));
 db($db_path, 'DELETE FROM Post');

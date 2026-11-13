@@ -46,6 +46,7 @@ sufi/
 ├── scripts/ops/deliver.php # Delivery worker (cron, every minute)
 ├── scripts/ops/backup.sh   # Daily SQLite backup (integrity-checked)
 ├── scripts/ops/restore.sh  # Verified restore (--yes required)
+├── scripts/ops/health.php  # Health check (cron + deploy)
 ├── scripts/ops/prune.php   # Inbox retention
 ├── scripts/ops/backfill.php # Fill actor_handle on old inbox rows
 ├── tests/                  # tests/run.php + fake remote server fixture
@@ -87,6 +88,7 @@ php -l index.php            # Syntax check
 ## 6. Deploy
 
 ```bash
+./scripts/deploy.sh --check      # manifest + syntax check, offline
 ./scripts/deploy.sh --dry-run    # preview (shows deletions too)
 ./scripts/deploy.sh              # tests + upload + federation smoke check
 ./scripts/deploy.sh --quick      # skip tests

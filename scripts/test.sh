@@ -63,6 +63,10 @@ make_instance() {
 PHP
 }
 
+say 'deploy manifest'
+"$root/scripts/deploy.sh" --check > /dev/null
+echo '  ok'
+
 say 'building sandbox'
 make_instance "$sandbox/root" '' "$port" true
 # The prefixed instance uses a bcrypt hash to exercise password_verify().

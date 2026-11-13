@@ -43,6 +43,11 @@ $outbox_page_size = 20;
 $max_post_chars   = 500;
 $max_upload_bytes = 5 * 1024 * 1024;
 
+// Images above this many pixels are rejected; larger dimensions are downscaled
+// (requires GD; without it the image is stored as-is).
+$max_image_pixels    = 40000000;
+$max_image_dimension = 2560;
+
 // Ops: inbox retention (days), panel idle logout (seconds), login rate limit.
 $inbox_retention_days = 90;
 $session_lifetime     = 43200;

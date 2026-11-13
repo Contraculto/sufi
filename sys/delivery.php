@@ -18,6 +18,9 @@ function save_log($label, $message) {
 
     $file = ($directories['logs'] ?? sys_get_temp_dir()) . '/security.log';
     if (is_file($file) && filesize($file) > 1048576) {
+        // Keep the current file plus two rotated generations.
+        @unlink($file . '.2');
+        @rename($file . '.1', $file . '.2');
         @rename($file, $file . '.1');
     }
 

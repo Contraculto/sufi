@@ -177,18 +177,23 @@ $allow_private_fetch = false;  // keep false: only https + public IPs are fetche
 $outbox_page_size    = 20;     // posts per /ap/outbox page
 $max_post_chars      = 500;
 $max_upload_bytes    = 5242880;
+$max_image_pixels    = 40000000;  // reject decompression bombs
+$max_image_dimension = 2560;      // downscale larger images (needs GD)
 $inbox_retention_days = 90;
 $session_lifetime     = 43200;  // panel idle logout, seconds
 $login_max_attempts   = 5;      // per 15 minutes, per IP
 ```
 
-The deploy script installs three cron jobs on the server:
+The deploy script installs four cron jobs on the server:
 
 ```
-* * * * *   delivery worker (retries with backoff)
-17 4 * * *  backup into sys/backups/, keeping the last 14
-27 4 * * *  prune inbox items older than the retention window
+*/15 * * * *  health check (failures recorded in security.log)
+* * * * *     delivery worker (retries with backoff)
+17 4 * * *    backup into sys/backups/, keeping the last 14
+27 4 * * *    prune inbox items and orphaned uploads
 ```
+
+`sys/logs/security.log` rotates at 1 MB and keeps two older generations.
 
 ### 5. Initialize the database
 
@@ -275,8 +280,9 @@ checks the federation endpoints afterwards. It never touches `sys/` runtime
 files on the server.
 
 ```bash
+./scripts/deploy.sh --check     # verify the shipped-file manifest + syntax, offline
 ./scripts/deploy.sh --dry-run   # preview, including files it would delete
-./scripts/deploy.sh             # tests + upload + smoke check
+./scripts/deploy.sh             # tests + upload + health + federation checks
 ./scripts/deploy.sh --quick     # skip tests (hotfix)
 ```
 
@@ -410,9 +416,12 @@ curl -X POST https://example.com/ap/post \
 ```
 
 The older single `attachment` + `attachment_description` fields still work.
-JPEG/PNG/GIF/WebP only, limited by `$max_upload_bytes`. Uploaded files are
-deleted when the post that used them is deleted; files that never made it into
-a post are removed by the daily prune once they are a day old.
+JPEG/PNG/GIF/WebP only, limited by `$max_upload_bytes`. Images above
+`$max_image_pixels` are rejected before decoding; longer sides above
+`$max_image_dimension` are downscaled when the GD extension is available (GIFs
+are left alone so animation survives). Uploaded files are deleted when the post
+that used them is deleted; files that never made it into a post are removed by
+the daily prune once they are a day old.
 
 ### Inbox
 
@@ -617,6 +626,20 @@ rm sys/sufi.sqlite
 Replace `sys/private.pem` with the new key and leave `sys/public.pem` next to it.
 The Actor row picks the new public key up on the next request; no SQL needed.
 Followers get it the next time their server fetches your actor profile.
+
+---
+
+## Health check
+
+```bash
+php scripts/ops/health.php
+```
+
+Reports database integrity and schema version, delivery queue depth and stuck
+items, post/follower counts, upload directory writability, free disk space and
+recent `Delivery.Dropped` entries. Exits non-zero on problems and writes a
+`Health.Failed` line to `sys/logs/security.log`, which is what the cron job
+(and the deploy smoke check) rely on.
 
 ---
 

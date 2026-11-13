@@ -25,6 +25,8 @@ $allow_private_fetch  = $allow_private_fetch ?? false;
 $outbox_page_size     = (int) ($outbox_page_size ?? 20);
 $max_post_chars       = (int) ($max_post_chars ?? 500);
 $max_upload_bytes     = (int) ($max_upload_bytes ?? 5 * 1024 * 1024);
+$max_image_pixels     = (int) ($max_image_pixels ?? 40000000);
+$max_image_dimension  = (int) ($max_image_dimension ?? 2560);
 $inbox_retention_days = (int) ($inbox_retention_days ?? 90);
 $session_lifetime     = (int) ($session_lifetime ?? 43200);
 $login_max_attempts   = (int) ($login_max_attempts ?? 5);
@@ -1246,7 +1248,7 @@ function serve_media($name) {
 }
 
 function upload_media() {
-    global $base_url, $max_upload_bytes;
+    global $base_url, $max_upload_bytes, $max_image_pixels, $max_image_dimension;
 
     if (!panel_auth()) { http_response_code(401); echo 'Unauthorized'; return; }
     require_csrf_if_session();
@@ -1277,6 +1279,13 @@ function upload_media() {
         return;
     }
 
+    [$width, $height] = $info;
+    if ($width * $height > $max_image_pixels) {
+        http_response_code(413);
+        echo 'Image dimensions are too large';
+        return;
+    }
+
     $dir = __DIR__ . '/sys/uploads';
     if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
 
@@ -1285,6 +1294,11 @@ function upload_media() {
         http_response_code(500);
         echo 'Could not store the file';
         return;
+    }
+
+    $max = $max_image_dimension;
+    if ($max > 0 && ($width > $max || $height > $max)) {
+        resize_image("{$dir}/{$name}", $ext, $max); // no-op without GD
     }
 
     header('Content-Type: application/json');
@@ -1333,6 +1347,45 @@ function requested_attachments(): ?array {
     }
 
     return count($list) > 4 ? null : $list;
+}
+
+/**
+ * Downscale an image in place so its longest side is at most $max pixels.
+ * Skipped for GIF (would drop animation) and when GD is not installed.
+ */
+function resize_image($path, $ext, $max) {
+    if ($ext === 'gif' || !function_exists('imagecreatetruecolor')) { return; }
+
+    $source = match ($ext) {
+        'jpg'  => @imagecreatefromjpeg($path),
+        'png'  => @imagecreatefrompng($path),
+        'webp' => @imagecreatefromwebp($path),
+        default => null,
+    };
+    if (!$source) { return; }
+
+    $width  = imagesx($source);
+    $height = imagesy($source);
+    $scale  = $max / max($width, $height);
+    $new_w  = max(1, (int) round($width * $scale));
+    $new_h  = max(1, (int) round($height * $scale));
+
+    $target = imagecreatetruecolor($new_w, $new_h);
+    if ($ext === 'png' || $ext === 'webp') {
+        imagealphablending($target, false);
+        imagesavealpha($target, true);
+    }
+    imagecopyresampled($target, $source, 0, 0, 0, 0, $new_w, $new_h, $width, $height);
+
+    match ($ext) {
+        'jpg'  => imagejpeg($target, $path, 85),
+        'png'  => imagepng($target, $path, 6),
+        'webp' => imagewebp($target, $path, 85),
+        default => null,
+    };
+
+    imagedestroy($source);
+    imagedestroy($target);
 }
 
 /** Local upload filenames referenced by a stored activity. */
