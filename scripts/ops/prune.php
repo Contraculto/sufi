@@ -16,5 +16,19 @@ $db_handler = SUFI\System\Database\connect_database();
 $days       = max(1, (int) ($inbox_retention_days ?? 90));
 $deleted    = SUFI\System\Database\prune_inbox($db_handler, $days);
 
-echo date('c') . " pruned inbox items older than {$days}d: {$deleted}\n";
+// Uploaded images that no post references and that are older than a day
+// (a day of slack so a compose in progress is never cleaned up).
+$orphans = 0;
+foreach (glob($root . '/sys/uploads/*') ?: [] as $file) {
+    if (!is_file($file) || filemtime($file) > time() - 86400) { continue; }
+
+    $name = basename($file);
+    $used = (int) $db_handler->query(
+        "SELECT COUNT(*) FROM Post WHERE data LIKE " . $db_handler->quote('%' . $name . '%')
+    )->fetchColumn();
+
+    if ($used === 0 && @unlink($file)) { $orphans++; }
+}
+
+echo date('c') . " pruned inbox items older than {$days}d: {$deleted}, orphaned uploads: {$orphans}\n";
 exit(0);

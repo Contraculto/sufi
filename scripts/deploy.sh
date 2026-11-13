@@ -52,7 +52,7 @@ if [[ $DRY -eq 1 ]]; then
         "$ROOT/" "root@$HOST:$REMOTE_DIR/"
     rsync -navc "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "$ROOT/sys/delivery.php" "root@$HOST:$REMOTE_DIR/sys/"
     rsync -navc "$ROOT/scripts/ops/deliver.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
-    rsync -navc "$ROOT/scripts/ops/backup.sh" "$ROOT/scripts/ops/prune.php" "$ROOT/scripts/ops/backfill.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
+    rsync -navc "$ROOT/scripts/ops/backup.sh" "$ROOT/scripts/ops/restore.sh" "$ROOT/scripts/ops/prune.php" "$ROOT/scripts/ops/backfill.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
     echo
     log "DRY-RUN — runtime files stay untouched:"
     echo "  sys/config.php  sys/private.pem  sys/public.pem  sys/sufi.sqlite  sys/logs/"
@@ -75,14 +75,16 @@ rsync -a --delete \
 rsync -a "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "$ROOT/sys/delivery.php" "root@$HOST:$REMOTE_DIR/sys/"
 ssh "root@$HOST" "mkdir -p $REMOTE_DIR/scripts/ops"
 rsync -a "$ROOT/scripts/ops/deliver.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
-rsync -a "$ROOT/scripts/ops/backup.sh" "$ROOT/scripts/ops/prune.php" "$ROOT/scripts/ops/backfill.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
+rsync -a "$ROOT/scripts/ops/backup.sh" "$ROOT/scripts/ops/restore.sh" "$ROOT/scripts/ops/prune.php" "$ROOT/scripts/ops/backfill.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
 
 log "linting on the server"
 ssh "root@$HOST" "php -l $REMOTE_DIR/index.php > /dev/null \
     && php -l $REMOTE_DIR/sys/delivery.php > /dev/null \
     && php -l $REMOTE_DIR/scripts/ops/deliver.php > /dev/null \\
     && php -l $REMOTE_DIR/scripts/ops/prune.php > /dev/null \\
-    && php -l $REMOTE_DIR/scripts/ops/backfill.php > /dev/null" \
+    && php -l $REMOTE_DIR/scripts/ops/backfill.php > /dev/null \\
+    && bash -n $REMOTE_DIR/scripts/ops/backup.sh \\
+    && bash -n $REMOTE_DIR/scripts/ops/restore.sh" \
     || die "syntax error or missing file on server"
 
 log "installing cron jobs"

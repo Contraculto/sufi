@@ -4,6 +4,8 @@ namespace SUFI;
 // ── Edit these for your instance ─────────────────────────────────────────────
 $server    = 'example.com';
 $username  = 'alice';
+// Plain string, or a bcrypt/argon hash:
+//   php -r "echo password_hash('your-password', PASSWORD_DEFAULT), PHP_EOL;"
 $password  = 'change-this-to-a-long-random-string';
 
 // Set to false to disable the web panel at /sufi/

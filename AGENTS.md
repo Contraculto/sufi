@@ -44,7 +44,8 @@ sufi/
 ├── deploy/                 # Web server configuration examples
 ├── scripts/test.sh         # Test runner (lint + sandbox + suite)
 ├── scripts/ops/deliver.php # Delivery worker (cron, every minute)
-├── scripts/ops/backup.sh   # Daily SQLite backup
+├── scripts/ops/backup.sh   # Daily SQLite backup (integrity-checked)
+├── scripts/ops/restore.sh  # Verified restore (--yes required)
 ├── scripts/ops/prune.php   # Inbox retention
 ├── scripts/ops/backfill.php # Fill actor_handle on old inbox rows
 ├── tests/                  # tests/run.php + fake remote server fixture
@@ -65,6 +66,7 @@ sufi/
 | Actor creation | `ensure_actor()` in `sys/database.php` (runs on bootstrap) |
 | Add or fix a test | `tests/run.php` (assertions), `scripts/test.sh` (setup) |
 | Outbound delivery / retries | `sys/delivery.php` + `scripts/ops/deliver.php` |
+| Uploads / attachments | `upload_media()`, `requested_attachments()` in `index.php` |
 | Post formatting / attachments | `format_content()`, `upload_media()` in `index.php` |
 | Schema changes | bump `SCHEMA_VERSION` + add a migration in `init_schema()` |
 | Blocking or moderation | `inbox()` + `action_users()` in `index.php`, `Block` table |

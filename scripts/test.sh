@@ -35,9 +35,9 @@ say 'php lint'
 find "$root" -name '*.php' -print0 | xargs -0 -n1 "$php" -l > /dev/null
 echo '  ok'
 
-# make_instance <dir> <base_path> <port> <allow_private_fetch>
+# make_instance <dir> <base_path> <port> <allow_private_fetch> [password]
 make_instance() {
-    local dir="$1" base="$2" inst_port="$3" allow_private="$4"
+    local dir="$1" base="$2" inst_port="$3" allow_private="$4" pass="${5:-testpass}"
 
     mkdir -p "$dir"
     tar -C "$root" \
@@ -52,7 +52,7 @@ make_instance() {
 // ── test overrides ───────────────────────────────────────────────────────────
 \$server        = '127.0.0.1:$inst_port';
 \$username      = 'alice';
-\$password      = 'testpass';
+\$password      = '$pass';
 \$base_path     = '$base';
 \$cookie_secure = false;
 \$base_url      = 'http://127.0.0.1:$inst_port$base/';
@@ -65,7 +65,9 @@ PHP
 
 say 'building sandbox'
 make_instance "$sandbox/root" '' "$port" true
-make_instance "$sandbox/prefix" '/sufi' "$port_prefix" false
+# The prefixed instance uses a bcrypt hash to exercise password_verify().
+hash=$("$php" -r 'echo password_hash("testpass", PASSWORD_DEFAULT);')
+make_instance "$sandbox/prefix" '/sufi' "$port_prefix" false "$hash"
 openssl genrsa -out "$sandbox/remote.pem" 2048 2>/dev/null
 export SUFI_REMOTE_KEY="$sandbox/remote.pem"
 export SUFI_REMOTE_LOG="$sandbox/remote-inbox.log"

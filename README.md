@@ -72,6 +72,7 @@ sys/
 scripts/
   ops/deliver.php  delivery worker, run from cron every minute
   ops/backup.sh    daily SQLite backup (keeps the last 14)
+  ops/restore.sh   restore a backup (verified, --yes required)
   ops/prune.php    drops inbox items older than $inbox_retention_days
 templates/
   actor.php        builds Actor JSON
@@ -398,9 +399,20 @@ file=@photo.jpg
 ```
 
 Returns `{"url": "https://example.com/ap/media/<hash>.jpg", "mediaType": ..., "name": ...}`.
-Send that URL as the `attachment` field when creating a post, optionally with
-`attachment_description` for alt text. One image per post, JPEG/PNG/GIF/WebP,
-limited by `$max_upload_bytes`.
+Attach up to four images by sending an `attachments` field on `POST /ap/post`
+with a JSON list; `description` becomes the alt text:
+
+```bash
+curl -X POST https://example.com/ap/post \
+  -d "password=your-secret" \
+  -d "content=two pictures" \
+  --data-urlencode 'attachments=[{"url":"https://example.com/ap/media/<hash>.jpg","description":"a pixel"}]'
+```
+
+The older single `attachment` + `attachment_description` fields still work.
+JPEG/PNG/GIF/WebP only, limited by `$max_upload_bytes`. Uploaded files are
+deleted when the post that used them is deleted; files that never made it into
+a post are removed by the daily prune once they are a day old.
 
 ### Inbox
 
@@ -592,7 +604,11 @@ rm sys/sufi.sqlite
 - Uploads are validated with `getimagesize()`, stored under `sys/uploads/` and
   served through `/ap/media/` — the directory itself is not web-accessible
 - Posts are stored as plain text and rendered to safe HTML (escaped, URL
-  linkified, paragraphs preserved) when they go out
+  linkified, mentions/hashtags tagged, paragraphs preserved) when they go out
+- The panel CSP allows only same-origin images and no framing; uploads are
+  removed with their post and orphans are pruned after a day
+- `$password` accepts a plain string or a bcrypt/argon hash; a hash is
+  recommended (it survives a config leak)
 
 ---
 
@@ -614,12 +630,14 @@ the instance is live. Backups land in `sys/backups/` and the newest 14 are kept.
 SUFI_BACKUP_KEEP=30 ./scripts/ops/backup.sh  # keep more
 ```
 
-Restore:
+Every backup is verified with `PRAGMA integrity_check` before it is kept.
+
+Restore (refuses to run without `--yes`, verifies the backup first, keeps the
+current database as `sys/sufi.sqlite.pre-restore-<stamp>`):
 
 ```bash
 sudo systemctl stop php8.4-fpm
-cp sys/backups/sufi-<stamp>.sqlite sys/sufi.sqlite
-rm -f sys/sufi.sqlite-wal sys/sufi.sqlite-shm
+./scripts/ops/restore.sh sys/backups/sufi-<stamp>.sqlite --yes
 sudo systemctl start php8.4-fpm
 ```
 

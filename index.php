@@ -210,7 +210,7 @@ switch ($request) {
 
             $token = (string) ($_POST['csrf_token'] ?? '');
             $csrf  = !empty($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
-            if ($csrf && hash_equals($password, (string) $_POST['password'])) {
+            if ($csrf && password_matches($_POST['password'] ?? '')) {
                 rate_limit_clear($limit_key);
                 session_regenerate_id(true);
                 $_SESSION['auth'] = true;
@@ -634,12 +634,16 @@ function create_post_endpoint() {
     }
     require_csrf_if_session();
 
-    $content     = trim((string) ($_POST['content']     ?? ($body['content']     ?? '')));
-    $in_reply    = trim((string) ($_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? '')));
-    $attachment  = trim((string) ($_POST['attachment']  ?? ($body['attachment']  ?? '')));
-    $description = trim((string) ($_POST['attachment_description'] ?? ($body['attachment_description'] ?? '')));
+    $content  = trim((string) ($_POST['content']     ?? ($body['content']     ?? '')));
+    $in_reply = trim((string) ($_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? '')));
+    $attachments = requested_attachments();
 
-    if ($content === '' && $attachment === '') {
+    if ($attachments === null) {
+        http_response_code(400);
+        echo "Invalid attachment";
+        return;
+    }
+    if ($content === '' && !$attachments) {
         http_response_code(400);
         echo "Missing content";
         return;
@@ -649,23 +653,18 @@ function create_post_endpoint() {
         echo "Post is longer than {$max_post_chars} characters";
         return;
     }
-    if ($attachment !== '' && attachment_from_url($attachment) === null) {
-        http_response_code(400);
-        echo "Invalid attachment";
-        return;
-    }
     if ($in_reply !== '' && !preg_match('#^https?://#i', $in_reply)) {
         http_response_code(400);
         echo "Invalid in_reply_to";
         return;
     }
 
-    $activity = create_post($content, $in_reply ?: null, $attachment ?: null, $description ?: null);
+    $activity = create_post($content, $in_reply ?: null, $attachments);
     header('Content-Type: application/activity+json; charset=utf-8');
     echo json_encode($activity);
 }
 
-function create_post($content, $in_reply_to = null, $attachment = null, $description = null) {
+function create_post($content, $in_reply_to = null, array $attachments = []) {
     global $base_url, $db_handler;
 
     $guid      = uuid();
@@ -686,11 +685,7 @@ function create_post($content, $in_reply_to = null, $attachment = null, $descrip
     if ($in_reply_to) { $note["inReplyTo"] = $in_reply_to; }
     if ($tags['tags']) { $note["tag"] = $tags['tags']; }
 
-    $media = $attachment ? attachment_from_url($attachment) : null;
-    if ($media) {
-        if ($description !== null) { $media['name'] = $description; }
-        $note['attachment'] = [$media];
-    }
+    if ($attachments) { $note['attachment'] = $attachments; }
 
     $activity = [
         "@context"  => "https://www.w3.org/ns/activitystreams",
@@ -750,7 +745,8 @@ function delete_post_endpoint($guid) {
     if (!panel_auth()) { http_response_code(401); echo "Unauthorized"; return; }
     require_csrf_if_session();
 
-    if (!System\Database\get_post($db_handler, $guid)) {
+    $post = System\Database\get_post($db_handler, $guid);
+    if (!$post) {
         http_response_code(404); echo "Not found"; return;
     }
 
@@ -764,6 +760,15 @@ function delete_post_endpoint($guid) {
     ];
     sendToFollowers($activity);
     System\Database\delete_post($db_handler, $guid);
+
+    // Remove uploaded files this post was the only user of.
+    foreach (local_media_files(json_decode((string) $post['data'], true) ?: []) as $file) {
+        $used = (int) $db_handler->query(
+            "SELECT COUNT(*) FROM Post WHERE data LIKE " . $db_handler->quote('%' . $file . '%')
+        )->fetchColumn();
+        if ($used === 0) { @unlink(__DIR__ . '/sys/uploads/' . $file); }
+    }
+
     echo "Deleted";
 }
 
@@ -1290,6 +1295,61 @@ function upload_media() {
     ]);
 }
 
+/**
+ * Attachments for a new post: `attachments` as a JSON list of {url, description},
+ * or the legacy single `attachment` + `attachment_description`. Null = invalid.
+ */
+function requested_attachments(): ?array {
+    global $body;
+
+    $raw  = $_POST['attachments'] ?? ($body['attachments'] ?? null);
+    $list = [];
+
+    if (is_string($raw) && $raw !== '') {
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) { return null; }
+
+        foreach ($decoded as $item) {
+            $url   = is_array($item) ? ($item['url'] ?? null) : (is_string($item) ? $item : null);
+            $media = attachment_from_url($url);
+            if (!$media) { return null; }
+
+            $description = is_array($item) ? ($item['description'] ?? '') : '';
+            if (is_string($description) && trim($description) !== '') {
+                $media['name'] = mb_substr(trim($description), 0, 1500);
+            }
+            $list[] = $media;
+        }
+    } else {
+        $url         = trim((string) ($_POST['attachment'] ?? ($body['attachment'] ?? '')));
+        $description = trim((string) ($_POST['attachment_description'] ?? ($body['attachment_description'] ?? '')));
+
+        if ($url !== '') {
+            $media = attachment_from_url($url);
+            if (!$media) { return null; }
+            if ($description !== '') { $media['name'] = mb_substr($description, 0, 1500); }
+            $list[] = $media;
+        }
+    }
+
+    return count($list) > 4 ? null : $list;
+}
+
+/** Local upload filenames referenced by a stored activity. */
+function local_media_files(array $data): array {
+    $note  = $data['object'] ?? $data;
+    $files = [];
+
+    foreach ((array) ($note['attachment'] ?? []) as $attachment) {
+        $url = is_array($attachment) ? ($attachment['url'] ?? null) : null;
+        if (is_string($url) && preg_match('#/ap/media/([a-f0-9]{32}\.(?:jpg|png|gif|webp))$#', $url, $m)) {
+            $files[] = $m[1];
+        }
+    }
+
+    return array_values(array_unique($files));
+}
+
 /** Resolve a local /ap/media/ URL into an ActivityStreams attachment, or null. */
 function attachment_from_url($url) {
     global $base_url;
@@ -1370,6 +1430,20 @@ function get_request_headers(): array {
 function request_password(): ?string {
     global $body;
     return $_POST['password'] ?? ($body['password'] ?? null);
+}
+
+/** Accepts a bcrypt/argon hash from config, or the legacy plain string. */
+function password_matches($given) {
+    global $password;
+
+    $given = (string) $given;
+    $stored = (string) $password;
+
+    if (preg_match('/^\$(2[aby]|argon2(id|i))\$/', $stored)) {
+        return password_verify($given, $stored);
+    }
+
+    return hash_equals($stored, $given);
 }
 
 function security_headers() {
@@ -1470,7 +1544,7 @@ function panel_auth() {
         return true;
     }
     // API/script access: allow a valid password in the request body.
-    return request_password() === $password;
+    return password_matches(request_password());
 }
 
 /**

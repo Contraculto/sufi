@@ -1,9 +1,9 @@
 <?php
 global $server, $username, $user_data, $panel_url, $base_url, $max_post_chars;
 header('Content-Type: text/html; charset=utf-8');
-header("Content-Security-Policy: default-src 'none'; img-src 'self' data: https:; "
+header("Content-Security-Policy: default-src 'none'; img-src 'self' data:; "
     . "style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; "
-    . "form-action 'self'; base-uri 'none'");
+    . "form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'");
 
 if (empty($_SESSION['auth'])):
 ?><!DOCTYPE html>
@@ -145,7 +145,10 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 .attach-row input[type=text] { flex: 1; padding: .3rem .5rem; background: var(--surface);
     border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .8rem; }
 .attach-row input[type=file] { color: var(--muted); font-size: .75rem; max-width: 45%; }
-#attach-preview img { max-height: 60px; border-radius: var(--radius); display: block; margin-top: .4rem; }
+#attach-preview img { max-height: 60px; border-radius: var(--radius); display: block; }
+.attach-item { display: flex; gap: .5rem; align-items: center; margin-top: .4rem; }
+.attach-item input[type=text] { flex: 1; padding: .3rem .5rem; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .8rem; }
 .profile-form { display: flex; flex-direction: column; gap: .5rem; max-width: 420px; }
 .profile-form label { font-size: .8rem; color: var(--muted); }
 .profile-form input, .profile-form textarea { padding: .4rem .6rem; background: var(--surface);
@@ -169,8 +172,8 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
       <button class="primary" onclick="post()">Post</button>
     </div>
     <div class="attach-row">
-      <input type="file" id="image" accept="image/jpeg,image/png,image/gif,image/webp" onchange="attachImage()">
-      <input type="text" id="alt" placeholder="image description (alt text)">
+      <input type="file" id="image" multiple accept="image/jpeg,image/png,image/gif,image/webp" onchange="attachImages()">
+      <span class="kind">up to 4 images</span>
     </div>
     <div id="attach-preview"></div>
     <div id="status"></div>
@@ -205,7 +208,7 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 const BASE = <?= json_encode(rtrim($base_url, '/')) ?>;
 const CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
 const MAX_CHARS = <?= (int) ($max_post_chars ?? 500) ?>;
-let attachment = null;
+let attachments = [];
 
 // Remote actors control their own names and URLs: always escape before injecting.
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -245,56 +248,76 @@ function countChars() {
     el.style.color = n > MAX_CHARS ? 'var(--danger)' : 'var(--muted)';
 }
 
-async function attachImage() {
+async function attachImages() {
     const input = document.getElementById('image');
-    if (!input.files.length) return;
 
-    const form = new FormData();
-    form.append('file', input.files[0]);
-    setStatus('uploading...');
+    for (const file of input.files) {
+        if (attachments.length >= 4) { setStatus('up to 4 images', false); break; }
 
-    const r = await fetch(`${BASE}/ap/upload`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'X-CSRF-Token': CSRF_TOKEN },
-        body: form
-    });
-    if (!r.ok) { setStatus('upload failed: ' + await r.text(), false); input.value = ''; return; }
+        const form = new FormData();
+        form.append('file', file);
+        setStatus('uploading...');
 
-    attachment = await r.json();
-    document.getElementById('attach-preview').innerHTML =
-        `<img src="${esc(attachment.url)}" alt="">`;
-    setStatus('image attached');
+        const r = await fetch(`${BASE}/ap/upload`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': CSRF_TOKEN },
+            body: form
+        });
+        if (!r.ok) { setStatus('upload failed: ' + await r.text(), false); continue; }
+
+        const media = await r.json();
+        attachments.push({ url: media.url, description: '' });
+    }
+
+    input.value = '';
+    renderAttachments();
+    setStatus('');
 }
 
-function clearAttachment() {
-    attachment = null;
+function renderAttachments() {
+    const box = document.getElementById('attach-preview');
+    box.innerHTML = attachments.map((a, i) => `
+        <div class="attach-item">
+            <img src="${esc(a.url)}" alt="">
+            <input type="text" placeholder="alt text" value="${esc(a.description)}"
+                   oninput="attachments[${i}].description=this.value">
+            <button class="ghost" onclick="removeAttachment(${i})">remove</button>
+        </div>`).join('');
+}
+
+function removeAttachment(index) {
+    attachments.splice(index, 1);
+    renderAttachments();
+}
+
+function clearAttachments() {
+    attachments = [];
     document.getElementById('image').value = '';
-    document.getElementById('alt').value = '';
     document.getElementById('attach-preview').innerHTML = '';
 }
 
 async function post() {
     const content  = document.getElementById('content').value.trim();
     const in_reply = document.getElementById('reply').value.trim();
-    const alt      = document.getElementById('alt').value.trim();
-    if (!content && !attachment) return;
+    if (!content && !attachments.length) return;
     if (content.length > MAX_CHARS) { setStatus('too long', false); return; }
     const btn = document.querySelector('button.primary');
     btn.disabled = true;
     setStatus('posting...');
     const data = { content };
     if (in_reply) data.in_reply_to = in_reply;
-    if (attachment) {
-        data.attachment = attachment.url;
-        if (alt) data.attachment_description = alt;
+    if (attachments.length) {
+        data.attachments = JSON.stringify(attachments.map(a => ({
+            url: a.url, description: a.description
+        })));
     }
     const r = await api('/ap/post', data);
     btn.disabled = false;
     if (r.ok) {
         document.getElementById('content').value = '';
         document.getElementById('reply').value = '';
-        clearAttachment();
+        clearAttachments();
         countChars();
         setStatus('posted');
         loadPosts();

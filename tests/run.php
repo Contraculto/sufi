@@ -11,6 +11,7 @@ $db_path  = (string) getenv('SUFI_DB');
 $pdb_path = (string) getenv('SUFI_PREFIX_DB');
 $key      = (string) getenv('SUFI_REMOTE_KEY');
 $rlog     = (string) getenv('SUFI_REMOTE_LOG');
+$root_dir = dirname(dirname($db_path));
 
 $count    = 0;
 $failures = 0;
@@ -388,6 +389,39 @@ $r = http('GET', $media['url']);
 check('media served', 200, $r[0]);
 check('media content type', true, str_contains(implode(',', $r[1]['content-type'] ?? []), 'image/png'));
 check('media bytes round-trip', $png, $r[2]);
+
+[$body, $type] = multipart([], 'pixel2.png', 'image/png', $png);
+$r = expect('second image upload', 200, http('POST', "{$instance}/ap/upload", $body,
+    [$type, 'X-CSRF-Token: ' . $csrf], $jar));
+$media2 = json_body($r);
+
+$r = expect('post with two attachments', 200, post("{$instance}/ap/post", [
+    'content'     => 'two pictures',
+    'attachments' => json_encode([
+        ['url' => $media2['url'], 'description' => 'first alt'],
+        ['url' => $media2['url'], 'description' => 'second alt'],
+    ]),
+    'csrf_token'  => $csrf,
+], $jar));
+$multi = json_body($r);
+check('two attachments stored', 2, count($multi['object']['attachment'] ?? []));
+check('first alt text', 'first alt', $multi['object']['attachment'][0]['name'] ?? null);
+check('second alt text', 'second alt', $multi['object']['attachment'][1]['name'] ?? null);
+
+$r = post("{$instance}/ap/post", [
+    'content'     => 'too many',
+    'attachments' => json_encode(array_fill(0, 5, ['url' => $media2['url']])),
+    'csrf_token'  => $csrf,
+], $jar);
+check('more than four attachments rejected', 400, $r[0]);
+
+// Deleting the post cleans up its files.
+$multi_guid = basename((string) ($multi['object']['id'] ?? ''));
+$media2_file = $root_dir . '/sys/uploads/' . basename((string) parse_url($media2['url'], PHP_URL_PATH));
+check('upload exists before delete', true, is_file($media2_file));
+expect('delete multi-attachment post', 200, post("{$instance}/ap/post/{$multi_guid}", ['action' => 'delete', 'password' => 'testpass']));
+clearstatcache();
+check('attachment removed with post', false, is_file($media2_file));
 
 expect('delete post', 200, post("{$instance}/ap/post/{$guid}", ['action' => 'delete', 'password' => 'testpass']));
 expect('deleted post is gone', 404, http('GET', "{$instance}/ap/post/{$guid}"));
@@ -859,9 +893,22 @@ check('backfill filled the handle', '@bob@' . $hostport, $backfilled[0]['actor_h
 putenv('PHP=' . PHP_BINARY);
 exec('bash ' . escapeshellarg($root_dir . '/scripts/ops/backup.sh') . ' 2>&1', $out, $code);
 check('backup exits cleanly', 0, $code);
+$orphan = $root_dir . '/sys/uploads/' . str_repeat('b', 32) . '.png';
+file_put_contents($orphan, 'x');
+touch($orphan, time() - 2 * 86400);
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/prune.php') . ' 2>&1', $out, $code);
+check('orphaned upload removed', false, is_file($orphan));
+
+$posts_before = count(db($db_path, 'SELECT * FROM Post'));
+db($db_path, 'DELETE FROM Post');
+
 $backups = glob($root_dir . '/sys/backups/sufi-*.sqlite') ?: [];
 check('backup file created', 1, count($backups));
 check('backup is a sqlite database', true, $backups && (new PDO('sqlite:' . $backups[0]))->query('PRAGMA user_version')->fetchColumn() !== false);
+
+exec('bash ' . escapeshellarg($root_dir . '/scripts/ops/restore.sh') . ' ' . escapeshellarg($backups[0]) . ' --yes 2>&1', $out, $code);
+check('restore exits cleanly', 0, $code);
+check('restore brought posts back', $posts_before, count(db($db_path, 'SELECT * FROM Post')));
 
 // ── login rate limiting (last: it locks the IP out for a while) ───────────────
 
