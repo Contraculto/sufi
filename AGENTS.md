@@ -46,6 +46,7 @@ sufi/
 ├── scripts/ops/deliver.php # Delivery worker (cron, every minute)
 ├── scripts/ops/backup.sh   # Daily SQLite backup
 ├── scripts/ops/prune.php   # Inbox retention
+├── scripts/ops/backfill.php # Fill actor_handle on old inbox rows
 ├── tests/                  # tests/run.php + fake remote server fixture
 └── .htaccess               # Apache rewrite rules
 ```

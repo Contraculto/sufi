@@ -108,6 +108,10 @@ switch ($request) {
         }
         break;
 
+    case "/ap/inbox/read":
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') { mark_inbox_endpoint(); }
+        break;
+
     case "/ap/outbox":
         require __DIR__ . "/templates/outbox.php";
         header("Content-Type: application/activity+json; charset=utf-8");
@@ -380,18 +384,102 @@ function inbox_items() {
         return;
     }
 
-    $items = System\Database\get_inbox_items($db_handler, 50, !empty($_GET['unread']));
-    foreach ($items as &$item) {
-        $item['data'] = json_decode($item['data'], true);
+    $limit  = min(100, max(1, (int) ($_GET['limit'] ?? 50)));
+    $before = isset($_GET['before_id']) ? (int) $_GET['before_id'] : null;
+    $unread = System\Database\count_unread_inbox($db_handler);
+
+    $rows = System\Database\get_inbox_items(
+        $db_handler, $limit + 1, $before, !empty($_GET['unread'])
+    );
+    $more = count($rows) > $limit;
+    if ($more) { array_pop($rows); }
+
+    $items = [];
+    foreach ($rows as $row) {
+        $data = json_decode((string) $row['data'], true) ?: [];
+        $row['data']     = $data;
+        $row['actor_handle'] = ($row['actor_handle'] ?? '') !== ''
+            ? $row['actor_handle']
+            : actor_handle((string) $row['actor_uri'], []);
+        $row['kind']     = inbox_kind((string) $row['type'], $data);
+        $row['reply_to'] = inbox_reply_to($data);
+        $row['preview']  = inbox_preview($data);
+        $items[] = $row;
     }
 
-    // Read before marking, so the panel can show what was unread.
+    $next = ($more && $items) ? (int) $items[count($items) - 1]['id'] : null;
+
+    // Mark after reading, so the panel still sees what was unread.
     if (!empty($_GET['mark_read'])) {
         System\Database\mark_inbox_read($db_handler);
     }
 
     header('Content-Type: application/json');
-    echo json_encode($items);
+    echo json_encode([
+        'items'          => $items,
+        'next_before_id' => $next,
+        'unread'         => $unread,
+    ]);
+}
+
+function mark_inbox_endpoint() {
+    global $db_handler, $body;
+
+    if (!panel_auth()) { http_response_code(401); echo 'Unauthorized'; return; }
+    require_csrf_if_session();
+
+    $id = $_POST['id'] ?? ($body['id'] ?? 'all');
+    if ($id === 'all' || $id === null || $id === '') {
+        System\Database\mark_inbox_read($db_handler);
+    } else {
+        System\Database\mark_inbox_read($db_handler, (int) $id);
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode(['unread' => System\Database\count_unread_inbox($db_handler)]);
+}
+
+function inbox_kind($type, array $data) {
+    global $base_url;
+
+    if ($type === 'Like')     { return 'like'; }
+    if ($type === 'Announce') { return 'boost'; }
+    if ($type !== 'Create')   { return 'other'; }
+
+    $object = $data['object'] ?? [];
+    if (!is_array($object)) { return 'other'; }
+
+    if (is_string($object['inReplyTo'] ?? null) && $object['inReplyTo'] !== '') {
+        return 'reply';
+    }
+
+    $tags = $object['tag'] ?? [];
+    if (is_array($tags)) {
+        foreach ($tags as $tag) {
+            if (is_array($tag) && ($tag['type'] ?? '') === 'Mention'
+                && ($tag['href'] ?? '') === "{$base_url}ap/actor") {
+                return 'mention';
+            }
+        }
+    }
+
+    return 'post';
+}
+
+function inbox_reply_to(array $data) {
+    $object = $data['object'] ?? null;
+    if (!is_array($object)) { return null; }
+    $in_reply_to = $object['inReplyTo'] ?? null;
+    return is_string($in_reply_to) && $in_reply_to !== '' ? $in_reply_to : null;
+}
+
+function inbox_preview(array $data) {
+    $object = $data['object'] ?? null;
+    $html   = is_array($object) ? ($object['content'] ?? '') : '';
+    if (!is_string($html) || $html === '') { return ''; }
+
+    $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    return mb_substr(trim(preg_replace('/\s+/', ' ', $text) ?? ''), 0, 300);
 }
 
 /**

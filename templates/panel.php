@@ -134,6 +134,11 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 .person a { color: var(--text); text-decoration: none; }
 .person a:hover { text-decoration: underline; }
 .pname { color: var(--muted); margin-left: .4rem; font-family: system-ui, sans-serif; }
+.kind { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.inbox-toolbar { display: flex; justify-content: flex-end; margin-bottom: .5rem; }
+.thread { margin-top: .5rem; border-left: 2px solid var(--border); padding-left: .75rem; }
+.thread .item-body { color: var(--muted); }
 
 #status { font-size: .8rem; color: var(--muted); min-height: 1.2rem; margin-top: .25rem; }
 .attach-row { display: flex; gap: .5rem; align-items: center; margin-top: .4rem; font-size: .8rem; }
@@ -344,44 +349,157 @@ async function deletePost(guid) {
     else { setStatus('error', false); }
 }
 
-async function loadInbox() {
+const inboxById = new Map();
+let inboxCursor = null;
+let inboxUnread = 0;
+
+const inboxLabels = { like: 'like', boost: 'boost', reply: 'reply', mention: 'mention', post: 'post', other: 'activity' };
+const inboxIcons  = { like: '♥', boost: '↻', reply: '💬', mention: '@', post: '•', other: '•' };
+
+function updateInboxBadge() {
+    document.getElementById('tab-inbox').textContent = inboxUnread ? `inbox (${inboxUnread})` : 'inbox';
+}
+
+function renderInboxItem(item) {
+    const icon   = inboxIcons[item.kind] || '•';
+    const label  = inboxLabels[item.kind] || 'activity';
+    const actor  = item.actor_uri || '';
+    const handle = item.actor_handle || esc(actor.replace(/https?:\/\//, ''));
+    const date   = (item.created_at || '').slice(0, 16).replace(' ', ' · ');
+    const unread = item.is_read ? '' : `<span class="dot" data-dot="${item.id}"></span>`;
+
+    const buttons = [];
+    if (item.reply_to) buttons.push(`<button class="ghost" data-thread="${item.id}">thread</button>`);
+    if (item.kind === 'reply' || item.kind === 'mention') {
+        buttons.push(`<button class="ghost" data-reply="${item.object_uri || ''}">reply</button>`);
+    }
+    if (!item.is_read) buttons.push(`<button class="ghost" data-read="${item.id}">mark read</button>`);
+    if (item.object_uri) buttons.push(`<a href="${esc(item.object_uri)}" target="_blank" style="color:var(--muted)">open</a>`);
+
+    return `<div class="item" id="inbox-${item.id}">
+        <div class="item-meta">
+            <span class="type-icon">${icon}</span>
+            <span class="kind">${label}</span>
+            <a href="${esc(actor)}" target="_blank" style="color:var(--muted)">${handle}</a>
+            <span>${date}</span>
+            ${unread}
+            ${buttons.join(' ')}
+        </div>
+        ${item.preview ? `<div class="item-body">${esc(item.preview)}</div>` : ''}
+        <div class="thread" id="thread-${item.id}" style="display:none"></div>
+    </div>`;
+}
+
+async function loadInbox(reset = true) {
     const panel = document.getElementById('panel-inbox');
-    const items = await get('/ap/inbox?mark_read=1');
-    if (!items) return;
 
-    const unread = items.filter(i => !i.is_read).length;
-    document.getElementById('tab-inbox').textContent = unread ? `inbox (${unread})` : 'inbox';
+    if (reset) {
+        inboxById.clear();
+        inboxCursor = null;
+        panel.innerHTML = '<div class="empty">loading...</div>';
+    }
 
-    if (!items.length) { panel.innerHTML = '<div class="empty">inbox empty</div>'; return; }
+    let url = '/ap/inbox?limit=20';
+    if (reset) url += '&mark_read=1';
+    if (inboxCursor) url += '&before_id=' + inboxCursor;
 
-    const icons = { Like: '♥', Announce: '↻', Create: '💬' };
-    panel.innerHTML = items.map(item => {
-        const icon   = icons[item.type] || '•';
-        const actor  = item.actor_uri || '';
-        const handle = item.actor_handle || esc(actor.replace(/https?:\/\//, ''));
-        const date   = (item.created_at || '').slice(0, 16).replace(' ', ' · ');
-        let preview  = '';
-        if (item.type === 'Create' && item.data?.object?.content) {
-            const text = String(item.data.object.content).replace(/<[^>]+>/g, '').slice(0, 220);
-            preview = `<div class="item-body">${esc(text)}</div>`;
-        }
-        const reply = (item.type === 'Create' && item.object_uri)
-            ? `<button class="ghost" data-reply="${esc(item.object_uri)}">reply</button>` : '';
-        const link = item.object_uri
-            ? `<a href="${esc(item.object_uri)}" target="_blank" style="color:var(--muted)">open</a>` : '';
-        return `<div class="item">
-            <div class="item-meta">
-                <span class="type-icon">${icon}</span>
-                <a href="${esc(actor)}" target="_blank" style="color:var(--muted)">${handle}</a>
-                <span>${date}</span>
-                ${reply} ${link}
-            </div>
-            ${preview}
-        </div>`;
-    }).join('');
+    const page = await get(url);
+    if (!page) return;
 
-    panel.querySelectorAll('[data-reply]').forEach(btn =>
-        btn.addEventListener('click', () => replyTo(btn.dataset.reply)));
+    inboxUnread = page.unread;
+    updateInboxBadge();
+
+    for (const item of page.items) inboxById.set(item.id, item);
+
+    const html = page.items.map(renderInboxItem).join('');
+
+    if (reset) {
+        panel.innerHTML = (inboxUnread ? '<div class="inbox-toolbar"><button class="ghost" onclick="markAllRead()">mark all read</button></div>' : '')
+            + (page.items.length ? '' : '<div class="empty">inbox empty</div>')
+            + html;
+    } else {
+        document.getElementById('inbox-more')?.remove();
+        panel.insertAdjacentHTML('beforeend', html);
+    }
+
+    inboxCursor = page.next_before_id;
+    if (inboxCursor) {
+        panel.insertAdjacentHTML('beforeend', '<button id="inbox-more" class="ghost" style="margin-top:.5rem">load more</button>');
+    }
+
+    panel.querySelectorAll('[data-reply]').forEach(b => {
+        if (b.dataset.wired) return;
+        b.dataset.wired = '1';
+        b.addEventListener('click', () => replyTo(b.dataset.reply));
+    });
+    panel.querySelectorAll('[data-thread]').forEach(b => {
+        if (b.dataset.wired) return;
+        b.dataset.wired = '1';
+        b.addEventListener('click', () => toggleThread(Number(b.dataset.thread)));
+    });
+    panel.querySelectorAll('[data-read]').forEach(b => {
+        if (b.dataset.wired) return;
+        b.dataset.wired = '1';
+        b.addEventListener('click', () => markRead(Number(b.dataset.read)));
+    });
+
+    document.getElementById('inbox-more')?.addEventListener('click', () => loadInbox(false));
+}
+
+async function markRead(id) {
+    const r = await api('/ap/inbox/read', { id });
+    if (!r.ok) return;
+    const body = await r.json();
+    inboxUnread = body.unread;
+    updateInboxBadge();
+    inboxById.get(id).is_read = 1;
+    document.querySelector(`[data-dot="${id}"]`)?.remove();
+    document.querySelector(`[data-read="${id}"]`)?.remove();
+}
+
+async function markAllRead() {
+    const r = await api('/ap/inbox/read', { id: 'all' });
+    if (!r.ok) return;
+    inboxUnread = 0;
+    updateInboxBadge();
+    inboxById.forEach(i => { i.is_read = 1; });
+    document.querySelectorAll('.dot, [data-read]').forEach(el => el.remove());
+    document.querySelectorAll('.inbox-toolbar').forEach(el => el.remove());
+    setStatus('inbox marked read');
+}
+
+function threadBody(html) {
+    const text = String(html || '').replace(/<[^>]+>/g, ' ');
+    return esc(text.replace(/\s+/g, ' ').trim());
+}
+
+async function toggleThread(id) {
+    const item = inboxById.get(id);
+    const box  = document.getElementById(`thread-${id}`);
+    if (!box || !item) return;
+
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    box.style.display = '';
+
+    if (!item.reply_to) return;
+
+    let parent = '';
+    if (item.reply_to.startsWith(BASE + '/ap/post/')) {
+        try {
+            const note = await fetch(item.reply_to, { headers: { Accept: 'application/activity+json' } }).then(r => r.json());
+            parent = `<div class="item">
+                <div class="item-meta"><span class="kind">your post</span>
+                    <a href="${esc(note.id)}" target="_blank" style="color:var(--muted)">open</a></div>
+                <div class="item-body">${threadBody(note.content)}</div>
+            </div>`;
+        } catch (e) { /* parent is gone or unreachable */ }
+    } else {
+        parent = `<div class="item-meta">replying to
+            <a href="${esc(item.reply_to)}" target="_blank">${esc(item.reply_to)}</a></div>`;
+    }
+
+    box.innerHTML = parent;
+    if (!item.is_read) await markRead(id);
 }
 
 function replyTo(uri) {
@@ -473,7 +591,7 @@ async function unblockUser(uri) {
     if (r.ok) loadPeople();
 }
 
-const loaders = { posts: loadPosts, inbox: loadInbox, people: loadPeople, profile: () => {} };
+const loaders = { posts: loadPosts, inbox: () => loadInbox(true), people: loadPeople, profile: () => {} };
 
 function switchTab(name, btn) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));

@@ -315,12 +315,27 @@ function update_post($DBH, $guid, $content, $data) {
 
 // ── Inbox items ───────────────────────────────────────────────────────────────
 
-function get_inbox_items($DBH, $limit = 50, $unread_only = false) {
-    $where = $unread_only ? 'WHERE is_read = 0' : '';
-    return get($DBH,
-        "SELECT * FROM InboxItem {$where} ORDER BY id DESC LIMIT ?",
-        [(int) $limit]
-    );
+function get_inbox_items($DBH, $limit = 50, $before_id = null, $unread_only = false) {
+    $where  = [];
+    $params = [];
+
+    if ($unread_only) { $where[] = 'is_read = 0'; }
+    if ($before_id !== null) {
+        $where[]  = 'id < ?';
+        $params[] = (int) $before_id;
+    }
+    $params[] = (int) $limit;
+
+    $sql = 'SELECT * FROM InboxItem'
+        . ($where ? ' WHERE ' . implode(' AND ', $where) : '')
+        . ' ORDER BY id DESC LIMIT ?';
+
+    return get($DBH, $sql, $params);
+}
+
+function get_inbox_item($DBH, $id) {
+    $rows = get($DBH, "SELECT * FROM InboxItem WHERE id = ? LIMIT 1", [(int) $id]);
+    return $rows[0] ?? null;
 }
 
 function add_inbox_item($DBH, $type, $actor_uri, $object_uri, $data, $actor_handle = '') {
@@ -330,8 +345,12 @@ function add_inbox_item($DBH, $type, $actor_uri, $object_uri, $data, $actor_hand
     );
 }
 
-function mark_inbox_read($DBH) {
-    run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE is_read = 0");
+function mark_inbox_read($DBH, $id = null) {
+    if ($id === null) {
+        run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE is_read = 0");
+        return;
+    }
+    run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE id = ?", [(int) $id]);
 }
 
 function count_unread_inbox($DBH) {

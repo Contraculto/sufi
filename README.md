@@ -397,12 +397,51 @@ Send that URL as the `attachment` field when creating a post, optionally with
 `attachment_description` for alt text. One image per post, JPEG/PNG/GIF/WebP,
 limited by `$max_upload_bytes`.
 
-### Inbox reading state
+### Inbox
 
-`GET /ap/inbox` returns the last 50 items, each with `actor_handle`, `object_uri`,
-`data` and `is_read`. Add `?mark_read=1` to mark everything read (the response
-still reflects the pre-mark state, so the panel can show a badge). Add
-`?unread=1` to return only unread items.
+```
+GET /ap/inbox?limit=50&before_id=<id>
+Cookie: PHPSESSID=...
+```
+
+Returns a page of inbox items plus the cursor and unread count:
+
+```json
+{
+  "items": [{
+    "id": 42,
+    "type": "Create",
+    "kind": "reply",
+    "actor_uri": "https://mastodon.social/users/alice",
+    "actor_handle": "@alice@mastodon.social",
+    "object_uri": "https://mastodon.social/@alice/123",
+    "reply_to": "https://example.com/ap/post/<guid>",
+    "preview": "nice post",
+    "is_read": 0,
+    "data": { "...": "raw activity" }
+  }],
+  "next_before_id": 41,
+  "unread": 3
+}
+```
+
+`kind` is one of `like`, `boost`, `reply`, `mention`, `post`, `other`.
+`limit` defaults to 50 (max 100), `next_before_id` is null on the last page.
+`?unread=1` filters to unread items, `?mark_read=1` marks the returned items
+read (the response still shows them as unread, so the panel can render a badge).
+
+Mark single items read:
+
+```
+POST /ap/inbox/read
+id=42            # or id=all
+```
+
+Older rows may have an empty `actor_handle`. Fill them in once after upgrading:
+
+```bash
+php scripts/ops/backfill.php        # 200 actors per run, safe to re-run
+```
 
 ### Followers and following
 

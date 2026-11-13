@@ -451,15 +451,91 @@ $auth_header = ['Content-Type: application/json'];
 $auth_body   = json_encode(['password' => 'testpass']);
 
 $r = expect('inbox listing', 200, http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header));
-$inbox_items = json_body($r);
-check('inbox item has readable handle', '@bob@' . $hostport, $inbox_items[0]['actor_handle'] ?? null);
-check('inbox item starts unread', 0, (int) ($inbox_items[0]['is_read'] ?? 1));
+$inbox_page = json_body($r);
+check('inbox response has items and unread', true, isset($inbox_page['items'], $inbox_page['unread']));
+$first = $inbox_page['items'][0] ?? [];
+check('inbox item has readable handle', '@bob@' . $hostport, $first['actor_handle'] ?? null);
+check('inbox item kind is post', 'post', $first['kind'] ?? null);
+check('inbox item has preview', true, str_contains((string) ($first['preview'] ?? ''), 'hello from bob'));
+check('inbox item starts unread', 0, (int) ($first['is_read'] ?? 1));
 
-$r = expect('inbox mark read', 200, http('GET', "{$instance}/ap/inbox?mark_read=1", $auth_body, $auth_header));
-check('mark_read returns pre-mark state', 0, (int) (json_body($r)[0]['is_read'] ?? 1));
+// Classification: reply, mention, boost, like.
+$reply_create = [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#creates/reply-1",
+    'type'     => 'Create',
+    'actor'    => $actorU,
+    'object'   => [
+        'id'        => "{$remote}/notes/reply-1",
+        'type'      => 'Note',
+        'content'   => '<p>nice post</p>',
+        'inReplyTo' => $second['object']['id'],
+    ],
+];
+expect('signed reply', 202, sign_post($inbox, $reply_create, $key, $keyId));
+
+$mention_create = [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#creates/mention-1",
+    'type'     => 'Create',
+    'actor'    => $actorU,
+    'object'   => [
+        'id'      => "{$remote}/notes/mention-1",
+        'type'    => 'Note',
+        'content' => '<p>hey <span class="h-card"><a href="' . $instance . '/ap/actor">@alice</a></span></p>',
+        'tag'     => [['type' => 'Mention', 'href' => "{$instance}/ap/actor", 'name' => '@alice']],
+    ],
+];
+expect('signed mention', 202, sign_post($inbox, $mention_create, $key, $keyId));
+
+$announce = [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#announces/1",
+    'type'     => 'Announce',
+    'actor'    => $actorU,
+    'object'   => $second['object']['id'],
+];
+expect('signed Announce', 202, sign_post($inbox, $announce, $key, $keyId));
+
+$r = expect('inbox after interactions', 200, http('GET', "{$instance}/ap/inbox?limit=10", $auth_body, $auth_header));
+$kinds = [];
+$reply_item = null;
+foreach (json_body($r)['items'] as $item) {
+    $kinds[$item['kind']] = true;
+    if (($item['kind'] ?? '') === 'reply') { $reply_item = $item; }
+}
+check('reply classified', true, isset($kinds['reply']));
+check('mention classified', true, isset($kinds['mention']));
+check('boost classified', true, isset($kinds['boost']));
+check('like classified', true, isset($kinds['like']));
+check('reply exposes parent url', $second['object']['id'], $reply_item['reply_to'] ?? null);
+
+$unread_before = (int) json_body($r)['unread'];
+check('unread count matches', true, $unread_before >= 4);
+
+// Pagination: walk one item at a time.
+$r = expect('inbox page 1', 200, http('GET', "{$instance}/ap/inbox?limit=1", $auth_body, $auth_header));
+$p1 = json_body($r);
+check('page holds one item', 1, count($p1['items']));
+check('page exposes cursor', true, !empty($p1['next_before_id']));
+$r = http('GET', "{$instance}/ap/inbox?limit=1&before_id=" . $p1['next_before_id'], $auth_body, $auth_header);
+$p2 = json_body($r);
+check('cursor returns next item', true, ($p2['items'][0]['id'] ?? 0) !== ($p1['items'][0]['id'] ?? 0));
+
+// Per-item read, then mark all.
+$target_id = (int) $p1['items'][0]['id'];
+$r = post("{$instance}/ap/inbox/read", ['id' => $target_id, 'password' => 'testpass']);
+$after_one = json_body($r)['unread'] ?? null;
+check('per-item read lowers unread', true, $after_one === $unread_before - 1);
+
+$r = expect('inbox mark all read', 200, http('GET', "{$instance}/ap/inbox?mark_read=1", $auth_body, $auth_header));
+$pre_mark = array_map(fn($i) => (int) $i['is_read'], json_body($r)['items']);
+check('mark_read returns pre-mark state', true, in_array(0, $pre_mark, true));
+check('mark_read response keeps unread count', true, (int) json_body($r)['unread'] >= 0);
 
 $r = http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header);
-check('inbox items read afterwards', 1, (int) (json_body($r)[0]['is_read'] ?? 0));
+check('inbox items read afterwards', 1, (int) (json_body($r)['items'][0]['is_read'] ?? 0));
+check('unread is zero', 0, (int) json_body($r)['unread']);
 
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
@@ -685,6 +761,14 @@ $code = 0;
 exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/prune.php') . ' 2>&1', $out, $code);
 check('prune exits cleanly', 0, $code);
 check('old inbox items pruned', $old_count - 1, count(db($db_path, 'SELECT * FROM InboxItem')));
+
+// Backfill of actor handles for items stored before handles existed.
+db($db_path, "INSERT INTO InboxItem (type, actor_uri, data) VALUES ('Create', ?, '{}')", [$actorU]);
+db($db_path, "UPDATE InboxItem SET actor_handle = '' WHERE actor_uri = ?", [$actorU]);
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/backfill.php') . ' 2>&1', $out, $code);
+check('backfill exits cleanly', 0, $code);
+$backfilled = db($db_path, 'SELECT actor_handle FROM InboxItem WHERE actor_uri = ? AND actor_handle <> ? LIMIT 1', [$actorU, '']);
+check('backfill filled the handle', '@bob@' . $hostport, $backfilled[0]['actor_handle'] ?? null);
 
 putenv('PHP=' . PHP_BINARY);
 exec('bash ' . escapeshellarg($root_dir . '/scripts/ops/backup.sh') . ' 2>&1', $out, $code);
