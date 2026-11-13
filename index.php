@@ -106,6 +106,10 @@ switch ($request) {
         echo Templates\likes($user_data);
         break;
 
+    case "/ap/people":
+        people();
+        break;
+
     case "/ap/action":
         if ($_SERVER['REQUEST_METHOD'] === 'POST') { action_users(); }
         break;
@@ -277,6 +281,48 @@ function inbox_items() {
     }
     header('Content-Type: application/json');
     echo json_encode($items);
+}
+
+/**
+ * Panel view of followers/following: readable handles instead of raw actor URIs.
+ */
+function people() {
+    global $db_handler;
+
+    if (!panel_auth()) {
+        http_response_code(401);
+        echo "Unauthorized";
+        return;
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'followers' => people_list(System\Database\get_followers($db_handler)),
+        'following' => people_list(System\Database\get_following($db_handler)),
+    ]);
+}
+
+function people_list(array $rows) {
+    $people = [];
+
+    foreach ($rows as $row) {
+        $data  = json_decode($row['data'] ?? '{}', true) ?: [];
+        $parts = parse_url((string) $row['actor_uri']);
+        $host  = ($parts['host'] ?? '') . (isset($parts['port']) ? ':' . $parts['port'] : '');
+        $user  = $data['preferredUsername'] ?? basename((string) ($parts['path'] ?? ''));
+
+        $url = $data['url'] ?? ($data['id'] ?? $row['actor_uri']);
+        if (!is_string($url)) { $url = $row['actor_uri']; }
+
+        $people[] = [
+            'uri'    => $row['actor_uri'],
+            'handle' => '@' . $user . '@' . $host,
+            'name'   => is_string($data['name'] ?? null) ? $data['name'] : '',
+            'url'    => $url,
+        ];
+    }
+
+    return $people;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -462,15 +508,35 @@ function action_users() {
     $user   = $_POST["user"]   ?? null;
     $action = $_POST["action"] ?? null;
 
-    if (!in_array($action, ["Follow", "Unfollow", "Block", "Unblock"])) {
+    if (!is_string($user) || $user === '') {
+        http_response_code(400);
+        echo "Missing user";
+        return;
+    }
+
+    if (!in_array($action, ["Follow", "Unfollow", "Block", "Unblock"], true)) {
         http_response_code(400);
         echo "Unsupported action";
         return;
     }
 
-    $details      = getUserDetails($user);
-    $profileInbox = $details["inbox"];
-    $profileUrl   = $details["profile"];
+    if (preg_match('#^https?://#i', $user)) {
+        // Unfollowing/blocking by actor URI. Only actors we already follow are
+        // accepted, so the panel cannot be used to send signed activities to
+        // arbitrary inboxes.
+        $row = System\Database\get_following_actor($db_handler, $user);
+        if (!$row) {
+            http_response_code(400);
+            echo "Not following that actor";
+            return;
+        }
+        $profileUrl   = $user;
+        $profileInbox = $row["inbox"];
+    } else {
+        $details      = getUserDetails($user);
+        $profileInbox = $details["inbox"] ?? null;
+        $profileUrl   = $details["profile"] ?? null;
+    }
 
     if (!$profileUrl || !$profileInbox) {
         http_response_code(400);
@@ -833,6 +899,31 @@ function verifyHTTPSignature() {
 // ════════════════════════════════════════════════════════════════════════════════
 // Utilities
 // ════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Request headers as a lower-case-friendly associative array. Works on Apache
+ * (getallheaders) and on PHP-FPM/Nginx by normalising $_SERVER entries.
+ */
+function get_request_headers(): array {
+    if (function_exists('getallheaders')) {
+        return getallheaders();
+    }
+    $headers = [];
+    foreach ($_SERVER as $key => $value) {
+        if (str_starts_with($key, 'HTTP_')) {
+            $headers[str_replace('_', '-', substr($key, 5))] = $value;
+        } elseif (in_array($key, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
+            $headers[str_replace('_', '-', $key)] = $value;
+        }
+    }
+    return $headers;
+}
+
+/** Password supplied by a script/API client, from POST form data or a JSON body. */
+function request_password(): ?string {
+    global $body;
+    return $_POST['password'] ?? ($body['password'] ?? null);
+}
 
 function panel_auth() {
     global $password;

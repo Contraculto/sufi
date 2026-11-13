@@ -111,6 +111,11 @@ function get_following($DBH) {
     return get($DBH, "SELECT * FROM Following ORDER BY created_at DESC");
 }
 
+function get_following_actor($DBH, $actor_uri) {
+    $rows = get($DBH, "SELECT * FROM Following WHERE actor_uri = ? LIMIT 1", [$actor_uri]);
+    return $rows[0] ?? null;
+}
+
 function add_following($DBH, $actor_uri, $inbox, $data) {
     run($DBH,
         "INSERT OR REPLACE INTO Following (actor_uri, inbox, data) VALUES (?, ?, ?)",

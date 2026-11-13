@@ -215,6 +215,10 @@ check('panel BASE is instance root', true, str_contains($r[2], 'const BASE = ' .
 $csrf = token($r[2]);
 check('panel exposes csrf token', true, $csrf !== null);
 
+$r = expect('people endpoint', 200, http('GET', "{$instance}/ap/people", null, [], $jar));
+check('no followers yet', [], json_body($r)['followers'] ?? null);
+check('not following anyone yet', [], json_body($r)['following'] ?? null);
+
 expect('session post without csrf', 403, post("{$instance}/ap/post", ['content' => 'nope'], $jar));
 $r = expect('session post with csrf', 200, post("{$instance}/ap/post", ['content' => 'from panel', 'csrf_token' => $csrf], $jar));
 $second = json_body($r);
@@ -269,6 +273,14 @@ expect('signed Follow', 202, sign_post($inbox, $follow, $key, $keyId));
 check('follower stored', 1, count(db($db_path, 'SELECT * FROM Follower')));
 check('Accept delivered to follower', true, str_contains((string) file_get_contents($rlog), '"type":"Accept"'));
 
+// The panel should show a readable handle, not the raw actor URI.
+$r = expect('people after follow', 200, http('GET', "{$instance}/ap/people",
+    json_encode(['password' => 'testpass']), ['Content-Type: application/json']));
+$people = json_body($r);
+check('follower handle', '@bob@' . parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT), $people['followers'][0]['handle'] ?? null);
+check('follower name', 'Bob', $people['followers'][0]['name'] ?? null);
+check('follower profile url', "{$remote}/u/bob", $people['followers'][0]['url'] ?? null);
+
 $note_uri = "{$instance}/ap/post/abc123";
 $like = [
     '@context' => 'https://www.w3.org/ns/activitystreams',
@@ -313,6 +325,20 @@ expect('signed Undo Follow', 202, sign_post($inbox, [
     'object'   => $follow,
 ], $key, $keyId));
 check('follower removed', 0, count(db($db_path, 'SELECT * FROM Follower')));
+
+// Unfollowing from the panel works by actor URI: no webfinger round-trip.
+db($db_path, "INSERT INTO Following (actor_uri, inbox, data) VALUES (?, ?, ?)",
+    [$actorU, "{$remote}/inbox", json_encode(['preferredUsername' => 'bob', 'name' => 'Bob'])]);
+
+$r = expect('people lists following', 200, http('GET', "{$instance}/ap/people",
+    json_encode(['password' => 'testpass']), ['Content-Type: application/json']));
+check('following handle', '@bob@' . parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT), json_body($r)['following'][0]['handle'] ?? null);
+
+expect('unfollow by uri', 200, post("{$instance}/ap/action", ['user' => $actorU, 'action' => 'Unfollow', 'password' => 'testpass']));
+check('following row removed', 0, count(db($db_path, 'SELECT * FROM Following')));
+check('Undo delivered', true, str_contains((string) file_get_contents($rlog), '"type":"Undo"'));
+
+expect('unfollow unknown uri rejected', 400, post("{$instance}/ap/action", ['user' => 'https://evil.example/u/x', 'action' => 'Unfollow', 'password' => 'testpass']));
 
 // ── subdirectory deployment ───────────────────────────────────────────────────
 

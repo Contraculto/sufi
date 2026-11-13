@@ -129,6 +129,7 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
     font-family: var(--mono); }
 .person a { color: var(--text); text-decoration: none; }
 .person a:hover { text-decoration: underline; }
+.pname { color: var(--muted); margin-left: .4rem; font-family: system-ui, sans-serif; }
 
 #status { font-size: .8rem; color: var(--muted); min-height: 1.2rem; margin-top: .25rem; }
 .empty  { color: var(--muted); font-size: .9rem; padding: 1rem 0; }
@@ -167,6 +168,10 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 <script>
 const BASE = <?= json_encode(rtrim($base_url, '/')) ?>;
 const CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
+
+// Remote actors control their own names and URLs: always escape before injecting.
+const esc = s => String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function setStatus(msg, ok = true) {
     const el = document.getElementById('status');
@@ -228,7 +233,7 @@ async function loadPosts() {
     if (!posts || !posts.length) { panel.innerHTML = '<div class="empty">no posts yet</div>'; return; }
     panel.innerHTML = posts.map(p => {
         const guid    = p.guid;
-        const content = (p.content || '').replace(/</g, '&lt;');
+        const content = esc(p.content);
         const date    = p.published ? p.published.slice(0, 10) : '';
         return `<div class="item" id="post-${guid}">
             <div class="item-meta"><span>${date}</span></div>
@@ -238,7 +243,7 @@ async function loadPosts() {
                 <button class="danger" onclick="deletePost('${guid}')">delete</button>
             </div>
             <div class="item-edit" id="edit-${guid}" style="display:none">
-                <textarea rows="3">${p.content || ''}</textarea>
+                <textarea rows="3">${esc(p.content)}</textarea>
                 <div class="item-actions">
                     <button class="primary" onclick="saveEdit('${guid}')">save</button>
                     <button class="ghost"   onclick="cancelEdit('${guid}')">cancel</button>
@@ -276,19 +281,20 @@ async function loadInbox() {
     panel.innerHTML = items.map(item => {
         const icon    = icons[item.type] || '[*]';
         const actor   = item.actor_uri || '';
-        const handle  = actor.replace(/https?:\/\//, '');
+        const handle  = esc(actor.replace(/https?:\/\//, ''));
         const date    = (item.created_at || '').slice(0, 10);
         let preview   = '';
         if (item.type === 'Create' && item.data?.object?.content) {
-            preview = `<div class="item-body">${item.data.object.content.replace(/<[^>]+>/g, '').slice(0, 200)}</div>`;
+            const text = String(item.data.object.content).replace(/<[^>]+>/g, '').slice(0, 200);
+            preview = `<div class="item-body">${esc(text)}</div>`;
         }
         if (item.object_uri) {
-            preview += `<div class="item-meta"><a href="${item.object_uri}" target="_blank" style="color:var(--muted)">${item.object_uri.slice(0, 60)}</a></div>`;
+            preview += `<div class="item-meta"><a href="${esc(item.object_uri)}" target="_blank" style="color:var(--muted)">${esc(item.object_uri.slice(0, 60))}</a></div>`;
         }
         return `<div class="item">
             <div class="item-meta">
                 <span class="type-icon">${icon}</span>
-                <a href="${actor}" target="_blank" style="color:var(--muted)">${handle}</a>
+                <a href="${esc(actor)}" target="_blank" style="color:var(--muted)">${handle}</a>
                 <span>${date}</span>
             </div>
             ${preview}
@@ -298,10 +304,8 @@ async function loadInbox() {
 
 async function loadPeople() {
     const panel = document.getElementById('panel-people');
-    const [followers, following] = await Promise.all([
-        fetch(`${BASE}/ap/followers`).then(r => r.json()),
-        fetch(`${BASE}/ap/following`).then(r => r.json()),
-    ]);
+    const people = await get('/ap/people');
+    if (!people) return;
 
     const followInput = `
         <div class="follow-form">
@@ -311,22 +315,29 @@ async function loadPeople() {
 
     const renderList = (items, withUnfollow) => {
         if (!items.length) return '<div class="empty">none</div>';
-        return items.map(uri => {
-            const handle = uri.replace(/https?:\/\//, '');
+        return items.map(p => {
+            const name = p.name ? `<span class="pname">${esc(p.name)}</span>` : '';
             const btn = withUnfollow
-                ? `<button class="ghost" onclick="unfollowUser('${uri}')">unfollow</button>`
+                ? `<button class="ghost" data-unfollow="${esc(p.uri)}">unfollow</button>`
                 : '';
-            return `<div class="person"><a href="${uri}" target="_blank">${handle}</a>${btn}</div>`;
+            return `<div class="person">
+                <span><a href="${esc(p.url)}" target="_blank">${esc(p.handle)}</a>${name}</span>
+                ${btn}
+            </div>`;
         }).join('');
     };
 
     panel.innerHTML = `
         ${followInput}
-        <div class="section-label">following (${following.totalItems})</div>
-        ${renderList(following.orderedItems || [], true)}
-        <div class="section-label">followers (${followers.totalItems})</div>
-        ${renderList(followers.orderedItems || [], false)}
+        <div class="section-label">following (${people.following.length})</div>
+        ${renderList(people.following, true)}
+        <div class="section-label">followers (${people.followers.length})</div>
+        ${renderList(people.followers, false)}
     `;
+
+    // URIs live in data attributes, not inline JS, so remote values cannot break out.
+    panel.querySelectorAll('[data-unfollow]').forEach(btn =>
+        btn.addEventListener('click', () => unfollowUser(btn.dataset.unfollow)));
 }
 
 async function followUser() {
@@ -339,8 +350,7 @@ async function followUser() {
 }
 
 async function unfollowUser(uri) {
-    const handle = '@' + uri.replace(/https?:\/\/([^/]+)\/users\/(.+)/, '$2@$1');
-    const r = await api('/ap/action', { user: handle, action: 'Unfollow' });
+    const r = await api('/ap/action', { user: uri, action: 'Unfollow' });
     const msg = await r.text();
     setStatus(msg, r.ok);
     if (r.ok) loadPeople();

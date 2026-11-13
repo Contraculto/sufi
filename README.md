@@ -329,6 +329,32 @@ Cookie: PHPSESSID=...
 
 Returns the 50 most recent items received by the inbox.
 
+### Followers and following
+
+```
+GET /ap/people
+Cookie: PHPSESSID=...
+```
+
+Panel-oriented version of the two collections: readable handles resolved from
+the stored actor documents instead of raw actor URIs. The matching `uri` is
+what `POST /ap/action` accepts for `Unfollow`/`Block`, so no webfinger lookup is
+needed.
+
+```json
+{
+  "followers": [
+    {
+      "uri": "https://mastodon.social/ap/users/116530059523052419",
+      "handle": "@ahmedhijazi@mastodon.social",
+      "name": "Ahmed hijazi",
+      "url": "https://mastodon.social/@ahmedhijazi"
+    }
+  ],
+  "following": []
+}
+```
+
 ### Scripting example (cookie jar)
 
 ```bash
