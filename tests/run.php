@@ -259,6 +259,28 @@ check('overlong post rejected', 400, $r[0]);
 $r = expect('outbox', 200, http('GET', "{$instance}/ap/outbox"));
 check('outbox has two items', 2, json_body($r)['totalItems'] ?? null);
 
+section('Mentions and hashtags');
+
+$remote_host = parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT);
+$local_host  = parse_url($instance, PHP_URL_HOST) . ':' . parse_url($instance, PHP_URL_PORT);
+
+$r = expect('post with mentions and hashtag', 200, post("{$instance}/ap/post", [
+    'content'  => "hello @bob@{$remote_host} and @alice@{$local_host} #Hola",
+    'password' => 'testpass',
+]));
+$tagged = json_body($r)['object'];
+check('mention is linked', true, str_contains($tagged['content'] ?? '', 'class="mention"'));
+check('hashtag is linked', true, str_contains($tagged['content'] ?? '', 'class="hashtag"'));
+
+$by_name = [];
+foreach ($tagged['tag'] ?? [] as $tag) { $by_name[$tag['name']] = $tag; }
+check('remote mention resolved', "{$remote}/u/bob", $by_name["@bob@{$remote_host}"]['href'] ?? null);
+check('self mention resolved', "{$instance}/ap/actor", $by_name["@alice@{$local_host}"]['href'] ?? null);
+check('hashtag tag href', "{$instance}/tags/hola", $by_name['#Hola']['href'] ?? null);
+
+$r = expect('tag page', 200, http('GET', "{$instance}/tags/hola"));
+check('tag page lists the post', true, str_contains($r[2], 'Hola'));
+
 $r = expect('update post', 200, post("{$instance}/ap/post/{$guid}", ['action' => 'update', 'content' => 'edited', 'password' => 'testpass']));
 check('update activity type', 'Update', json_body($r)['type'] ?? null);
 $r = expect('fetch updated post', 200, http('GET', "{$instance}/ap/post/{$guid}"));
@@ -424,6 +446,24 @@ check('follower handle', '@bob@' . parse_url($remote, PHP_URL_HOST) . ':' . pars
 check('follower name', 'Bob', $people['followers'][0]['name'] ?? null);
 check('follower profile url', "{$remote}/u/bob", $people['followers'][0]['url'] ?? null);
 
+// Remote profile changes must refresh what we stored.
+expect('signed Update actor', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#updates/1",
+    'type'     => 'Update',
+    'actor'    => $actorU,
+    'object'   => [
+        'id'                => $actorU,
+        'type'              => 'Person',
+        'preferredUsername' => 'bob',
+        'name'              => 'Bob Renamed',
+        'inbox'             => "{$remote}/inbox",
+        'endpoints'         => ['sharedInbox' => "{$remote}/inbox"],
+    ],
+], $key, $keyId));
+check('follower data refreshed', true,
+    str_contains((string) (db($db_path, 'SELECT data FROM Follower WHERE actor_uri = ?', [$actorU])[0]['data'] ?? ''), 'Bob Renamed'));
+
 $note_uri = "{$instance}/ap/post/abc123";
 $like = [
     '@context' => 'https://www.w3.org/ns/activitystreams',
@@ -536,6 +576,12 @@ check('mark_read response keeps unread count', true, (int) json_body($r)['unread
 $r = http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header);
 check('inbox items read afterwards', 1, (int) (json_body($r)['items'][0]['is_read'] ?? 0));
 check('unread is zero', 0, (int) json_body($r)['unread']);
+
+expect('delete inbox item', 200, post("{$instance}/ap/inbox/delete", ['id' => $target_id, 'password' => 'testpass']));
+check('inbox item deleted', 0, count(db($db_path, 'SELECT * FROM InboxItem WHERE id = ?', [$target_id])));
+
+post("{$instance}/ap/inbox/delete", ['id' => 'read', 'password' => 'testpass']);
+check('read inbox cleared', 0, count(db($db_path, 'SELECT * FROM InboxItem WHERE is_read = 1')));
 
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
@@ -673,6 +719,25 @@ expect('undo by activity id', 202, sign_post($inbox, [
 ], $key, $keyId));
 check('undo-by-id removed follower', 0, count(db($db_path, 'SELECT * FROM Follower')));
 
+section('Account moves');
+
+db($db_path, "INSERT OR REPLACE INTO Follower (actor_uri, inbox, data) VALUES (?, ?, '{}')", [$actorU, "{$remote}/inbox"]);
+db($db_path, "INSERT OR REPLACE INTO Following (actor_uri, inbox, data, state) VALUES (?, ?, '{}', 'accepted')", [$actorU, "{$remote}/inbox"]);
+
+expect('signed Move', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#moves/1",
+    'type'     => 'Move',
+    'actor'    => $actorU,
+    'object'   => $actorU,
+    'target'   => "{$remote}/u/carol",
+], $key, $keyId));
+
+check('following moved', 1, count(db($db_path, 'SELECT * FROM Following WHERE actor_uri = ?', ["{$remote}/u/carol"])));
+check('old following removed', 0, count(db($db_path, 'SELECT * FROM Following WHERE actor_uri = ?', [$actorU])));
+check('follower moved', 1, count(db($db_path, 'SELECT * FROM Follower WHERE actor_uri = ?', ["{$remote}/u/carol"])));
+check('old follower removed', 0, count(db($db_path, 'SELECT * FROM Follower WHERE actor_uri = ?', [$actorU])));
+
 section('Delivery retries');
 
 $fail_flag = $rlog . '.fail';
@@ -697,6 +762,27 @@ check('worker reports a delivery', true, str_contains(implode("\n", $out), 'deli
 check('queue drained', 0, count(db($db_path, 'SELECT * FROM Delivery')));
 check('retry reached the inbox', true, str_contains((string) file_get_contents($rlog), 'retry-marker'));
 db($db_path, 'DELETE FROM Follower WHERE actor_uri = ?', ["{$actorU}#retry"]);
+
+section('Dead follower cleanup');
+
+$root_dir = dirname(dirname($db_path));
+$sec_log  = $root_dir . '/sys/logs/security.log';
+@unlink($sec_log);
+
+file_put_contents($rlog . '.fail', '1');
+db($db_path, "INSERT OR REPLACE INTO Follower (actor_uri, inbox, data) VALUES (?, ?, '{}')",
+    ["{$actorU}#dead", "{$remote}/inbox"]);
+db($db_path, "INSERT INTO Delivery (inbox, payload, attempts, next_try) VALUES (?, ?, 9, datetime('now', '-1 minute'))",
+    ["{$remote}/inbox", json_encode(['type' => 'Create', 'actor' => "{$actorU}#dead"])]);
+
+$out  = [];
+$code = 0;
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/deliver.php') . ' 2>&1', $out, $code);
+check('worker survives a dead inbox', 0, $code);
+check('dead follower removed', 0, count(db($db_path, 'SELECT * FROM Follower WHERE actor_uri = ?', ["{$actorU}#dead"])));
+check('dead delivery dropped', 0, count(db($db_path, 'SELECT * FROM Delivery')));
+check('drop logged', true, str_contains((string) @file_get_contents($sec_log), 'Delivery.Dropped'));
+unlink($rlog . '.fail');
 
 // ── subdirectory deployment ───────────────────────────────────────────────────
 

@@ -374,6 +374,7 @@ function renderInboxItem(item) {
         buttons.push(`<button class="ghost" data-reply="${item.object_uri || ''}">reply</button>`);
     }
     if (!item.is_read) buttons.push(`<button class="ghost" data-read="${item.id}">mark read</button>`);
+    buttons.push(`<button class="ghost" data-delete="${item.id}">delete</button>`);
     if (item.object_uri) buttons.push(`<a href="${esc(item.object_uri)}" target="_blank" style="color:var(--muted)">open</a>`);
 
     return `<div class="item" id="inbox-${item.id}">
@@ -414,7 +415,10 @@ async function loadInbox(reset = true) {
     const html = page.items.map(renderInboxItem).join('');
 
     if (reset) {
-        panel.innerHTML = (inboxUnread ? '<div class="inbox-toolbar"><button class="ghost" onclick="markAllRead()">mark all read</button></div>' : '')
+        panel.innerHTML = '<div class="inbox-toolbar">'
+            + '<button class="ghost" onclick="clearReadInbox()">clear read</button>'
+            + (inboxUnread ? '<button class="ghost" onclick="markAllRead()">mark all read</button>' : '')
+            + '</div>'
             + (page.items.length ? '' : '<div class="empty">inbox empty</div>')
             + html;
     } else {
@@ -442,6 +446,11 @@ async function loadInbox(reset = true) {
         b.dataset.wired = '1';
         b.addEventListener('click', () => markRead(Number(b.dataset.read)));
     });
+    panel.querySelectorAll('[data-delete]').forEach(b => {
+        if (b.dataset.wired) return;
+        b.dataset.wired = '1';
+        b.addEventListener('click', () => deleteInboxItem(Number(b.dataset.delete)));
+    });
 
     document.getElementById('inbox-more')?.addEventListener('click', () => loadInbox(false));
 }
@@ -455,6 +464,33 @@ async function markRead(id) {
     inboxById.get(id).is_read = 1;
     document.querySelector(`[data-dot="${id}"]`)?.remove();
     document.querySelector(`[data-read="${id}"]`)?.remove();
+}
+
+async function deleteInboxItem(id) {
+    const r = await api('/ap/inbox/delete', { id });
+    if (!r.ok) return;
+    const body = await r.json();
+    inboxUnread = body.unread;
+    updateInboxBadge();
+    inboxById.delete(id);
+    document.getElementById(`inbox-${id}`)?.remove();
+    setStatus('deleted');
+}
+
+async function clearReadInbox() {
+    if (!confirm('delete every inbox item you have already read?')) return;
+    const r = await api('/ap/inbox/delete', { id: 'read' });
+    if (!r.ok) return;
+    const body = await r.json();
+    inboxUnread = body.unread;
+    updateInboxBadge();
+    inboxById.forEach((item, id) => {
+        if (item.is_read) {
+            inboxById.delete(id);
+            document.getElementById(`inbox-${id}`)?.remove();
+        }
+    });
+    setStatus('cleared read items');
 }
 
 async function markAllRead() {

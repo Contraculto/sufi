@@ -57,6 +57,7 @@ make_instance() {
 \$cookie_secure = false;
 \$base_url      = 'http://127.0.0.1:$inst_port$base/';
 \$actor_name    = 'Alice';
+\$remote_scheme = 'http';
 \$allow_private_fetch = $allow_private;
 \$outbox_page_size = 2;
 PHP

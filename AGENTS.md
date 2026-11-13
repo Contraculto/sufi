@@ -68,6 +68,7 @@ sufi/
 | Post formatting / attachments | `format_content()`, `upload_media()` in `index.php` |
 | Schema changes | bump `SCHEMA_VERSION` + add a migration in `init_schema()` |
 | Blocking or moderation | `inbox()` + `action_users()` in `index.php`, `Block` table |
+| Mentions / hashtags | `post_tags()` + `format_content()` in `index.php` |
 
 ---
 

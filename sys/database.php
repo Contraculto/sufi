@@ -151,6 +151,19 @@ function remove_follower($DBH, $actor_uri) {
     run($DBH, "DELETE FROM Follower WHERE actor_uri = ?", [$actor_uri]);
 }
 
+function refresh_follower($DBH, $actor_uri, $inbox, $data) {
+    run($DBH,
+        "UPDATE Follower SET inbox = ?, data = ? WHERE actor_uri = ?",
+        [$inbox, is_string($data) ? $data : json_encode($data), $actor_uri]
+    );
+}
+
+function remove_followers_by_inbox($DBH, $inbox) {
+    $STH = $DBH->prepare("DELETE FROM Follower WHERE inbox = ?");
+    $STH->execute([$inbox]);
+    return $STH->rowCount();
+}
+
 // ── Following ─────────────────────────────────────────────────────────────────
 
 function get_following($DBH) {
@@ -186,6 +199,13 @@ function remove_following($DBH, $actor_uri) {
     run($DBH, "DELETE FROM Following WHERE actor_uri = ?", [$actor_uri]);
 }
 
+function refresh_following($DBH, $actor_uri, $inbox, $data) {
+    run($DBH,
+        "UPDATE Following SET inbox = ?, data = ? WHERE actor_uri = ?",
+        [$inbox, is_string($data) ? $data : json_encode($data), $actor_uri]
+    );
+}
+
 // ── Posts ─────────────────────────────────────────────────────────────────────
 
 function get_posts($DBH) {
@@ -198,6 +218,13 @@ function count_posts($DBH) {
 
 function oldest_post_id($DBH) {
     return (int) $DBH->query("SELECT COALESCE(MIN(id), 0) FROM Post")->fetchColumn();
+}
+
+function posts_with_tag($DBH, $tag, $limit = 50) {
+    return get($DBH,
+        "SELECT * FROM Post WHERE content LIKE ? ORDER BY id DESC LIMIT ?",
+        ['%#' . $tag . '%', (int) $limit]
+    );
 }
 
 function get_posts_page($DBH, $limit, $max_id = null) {
@@ -355,6 +382,16 @@ function mark_inbox_read($DBH, $id = null) {
 
 function count_unread_inbox($DBH) {
     return (int) $DBH->query("SELECT COUNT(*) FROM InboxItem WHERE is_read = 0")->fetchColumn();
+}
+
+function delete_inbox_item($DBH, $id) {
+    run($DBH, "DELETE FROM InboxItem WHERE id = ?", [(int) $id]);
+}
+
+function delete_read_inbox($DBH) {
+    $STH = $DBH->prepare("DELETE FROM InboxItem WHERE is_read = 1");
+    $STH->execute();
+    return $STH->rowCount();
 }
 
 function prune_inbox($DBH, $days) {

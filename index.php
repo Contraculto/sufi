@@ -29,6 +29,7 @@ $inbox_retention_days = (int) ($inbox_retention_days ?? 90);
 $session_lifetime     = (int) ($session_lifetime ?? 43200);
 $login_max_attempts   = (int) ($login_max_attempts ?? 5);
 $login_window         = (int) ($login_window ?? 900);
+$remote_scheme        = $remote_scheme ?? 'https';
 
 security_headers();
 
@@ -110,6 +111,10 @@ switch ($request) {
 
     case "/ap/inbox/read":
         if ($_SERVER['REQUEST_METHOD'] === 'POST') { mark_inbox_endpoint(); }
+        break;
+
+    case "/ap/inbox/delete":
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') { delete_inbox_endpoint(); }
         break;
 
     case "/ap/outbox":
@@ -224,6 +229,8 @@ switch ($request) {
     default:
         if ($request === "/@{$username}" || $request === "/{$username}" || $request === "/") {
             require __DIR__ . "/templates/home.php";
+        } elseif (preg_match('#^/tags/([\p{L}\p{N}_-]{1,64})$#u', $request, $m)) {
+            tag_page($m[1]);
         } elseif (preg_match('#^/ap/media/([a-f0-9]{32}\.(?:jpg|png|gif|webp))$#', $request, $m)) {
             serve_media($m[1]);
         } elseif (preg_match('#^/ap/post/([a-f0-9-]+)$#', $request, $m)) {
@@ -287,6 +294,51 @@ function inbox() {
             System\Database\remove_likes_for_object($db_handler, $object_uri);
         }
 
+        http_response_code(202);
+        die();
+    }
+
+    // Remote actor profile changes: refresh what we stored about them.
+    if ($type === "Update") {
+        $object = $body["object"] ?? null;
+        if (is_array($object) && ($object["id"] ?? null) === $actor_uri) {
+            $inbox = $object["endpoints"]["sharedInbox"] ?? $object["inbox"] ?? null;
+            if (is_string($inbox) && $inbox !== '') {
+                $json = json_encode($object);
+                System\Database\refresh_follower($db_handler, $actor_uri, $inbox, $json);
+                System\Database\refresh_following($db_handler, $actor_uri, $inbox, $json);
+                System\Database\run($db_handler,
+                    "UPDATE InboxItem SET actor_handle = ? WHERE actor_uri = ? AND actor_handle = ''",
+                    [actor_handle($actor_uri, $object), $actor_uri]
+                );
+            }
+        }
+        http_response_code(202);
+        die();
+    }
+
+    // Account moved to a new actor: carry followers/following over.
+    if ($type === "Move") {
+        $target = $body["target"] ?? null;
+        if (is_string($target) && $target !== '' && $target !== $actor_uri) {
+            $doc   = getDataFromURl($target);
+            $inbox = is_array($doc) ? ($doc["endpoints"]["sharedInbox"] ?? $doc["inbox"] ?? null) : null;
+
+            if (is_string($inbox) && $inbox !== '') {
+                $following = System\Database\get_following_actor($db_handler, $actor_uri);
+                if ($following) {
+                    System\Database\add_following($db_handler, $target, $inbox, $doc,
+                        null, $following["state"] ?? "accepted");
+                    System\Database\remove_following($db_handler, $actor_uri);
+                }
+
+                $follower = System\Database\get_follower($db_handler, $actor_uri);
+                if ($follower) {
+                    System\Database\add_follower($db_handler, $target, $inbox, $doc, null);
+                    System\Database\remove_follower($db_handler, $actor_uri);
+                }
+            }
+        }
         http_response_code(202);
         die();
     }
@@ -439,6 +491,51 @@ function mark_inbox_endpoint() {
     echo json_encode(['unread' => System\Database\count_unread_inbox($db_handler)]);
 }
 
+function delete_inbox_endpoint() {
+    global $db_handler, $body;
+
+    if (!panel_auth()) { http_response_code(401); echo 'Unauthorized'; return; }
+    require_csrf_if_session();
+
+    $id = $_POST['id'] ?? ($body['id'] ?? null);
+
+    if ($id === 'read') {
+        System\Database\delete_read_inbox($db_handler);
+    } elseif ($id !== null && $id !== '' && $id !== 'all') {
+        System\Database\delete_inbox_item($db_handler, (int) $id);
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode(['unread' => System\Database\count_unread_inbox($db_handler)]);
+}
+
+function tag_page($tag) {
+    global $db_handler, $base_url;
+
+    $posts = System\Database\posts_with_tag($db_handler, $tag);
+    $name  = htmlspecialchars($tag, ENT_QUOTES);
+
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        . '<title>#' . $name . '</title>'
+        . '<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;'
+        . 'line-height:1.5}a{color:inherit}.post{border-bottom:1px solid #ddd;padding:.75rem 0}'
+        . '.meta{color:#777;font-size:.8rem}</style></head><body>'
+        . '<p><a href="' . htmlspecialchars($base_url, ENT_QUOTES) . '">back</a></p>'
+        . '<h1>#' . $name . '</h1>';
+
+    if (!$posts) {
+        echo '<p>No posts use this hashtag.</p>';
+    }
+    foreach ($posts as $post) {
+        echo '<div class="post"><div class="meta">'
+            . htmlspecialchars((string) $post['published'], ENT_QUOTES)
+            . '</div><div>' . nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES)) . '</div></div>';
+    }
+
+    echo '</body></html>';
+}
+
 function inbox_kind($type, array $data) {
     global $base_url;
 
@@ -574,6 +671,7 @@ function create_post($content, $in_reply_to = null, $attachment = null, $descrip
     $guid      = uuid();
     $base      = $base_url;
     $published = date('c');
+    $tags      = post_tags($content);
 
     $note = [
         "@context"     => "https://www.w3.org/ns/activitystreams",
@@ -581,11 +679,12 @@ function create_post($content, $in_reply_to = null, $attachment = null, $descrip
         "type"         => "Note",
         "published"    => $published,
         "attributedTo" => "{$base}ap/actor",
-        "content"      => format_content($content),
+        "content"      => format_content($content, $tags['mentions']),
         "to"           => ["https://www.w3.org/ns/activitystreams#Public"],
         "cc"           => ["{$base}ap/followers"],
     ];
     if ($in_reply_to) { $note["inReplyTo"] = $in_reply_to; }
+    if ($tags['tags']) { $note["tag"] = $tags['tags']; }
 
     $media = $attachment ? attachment_from_url($attachment) : null;
     if ($media) {
@@ -692,6 +791,7 @@ function update_post_endpoint($guid) {
     $previous = json_decode((string) $post['data'], true) ?: [];
     $previous = $previous['object'] ?? $previous;
     $media    = $previous['attachment'] ?? null;
+    $tags     = post_tags($content);
 
     $note = [
         "@context"     => "https://www.w3.org/ns/activitystreams",
@@ -700,11 +800,12 @@ function update_post_endpoint($guid) {
         "published"    => $post['published'],
         "updated"      => $updated,
         "attributedTo" => $actor_url,
-        "content"      => format_content($content),
+        "content"      => format_content($content, $tags['mentions']),
         "to"           => ["https://www.w3.org/ns/activitystreams#Public"],
         "cc"           => ["{$base}ap/followers"],
     ];
     if (!empty($previous['inReplyTo'])) { $note['inReplyTo'] = $previous['inReplyTo']; }
+    if ($tags['tags']) { $note['tag'] = $tags['tags']; }
     if (is_array($media)) { $note['attachment'] = $media; }
     $activity = [
         "@context"  => "https://www.w3.org/ns/activitystreams",
@@ -1281,7 +1382,9 @@ function security_headers() {
  * Turn plain text from the composer into the HTML that ActivityStreams expects:
  * escaped, URLs linked, paragraphs and line breaks preserved.
  */
-function format_content($text) {
+function format_content($text, array $mentions = []) {
+    global $base_url;
+
     $html = htmlspecialchars(trim((string) $text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
     $html = preg_replace_callback('~https?://[^\s<]+~i', function ($m) {
@@ -1291,6 +1394,22 @@ function format_content($text) {
             . $url . '</a>' . $suffix;
     }, $html);
 
+    $html = preg_replace_callback('/(?<![\w@])@([\w.-]+)@([\w-]+(?:\.[\w-]+)+(?::\d+)?)/u',
+        function ($m) use ($mentions) {
+            $handle = '@' . $m[1] . '@' . $m[2];
+            $href   = $mentions[$handle] ?? null;
+            return $href
+                ? '<a href="' . htmlspecialchars($href, ENT_QUOTES) . '" class="mention">' . $handle . '</a>'
+                : $handle;
+        }, $html);
+
+    $html = preg_replace_callback('/(?<![\w&#])#([\p{L}\p{N}_]{1,64})/u',
+        function ($m) use ($base_url) {
+            $slug = mb_strtolower($m[1]);
+            return '<a href="' . htmlspecialchars("{$base_url}tags/" . rawurlencode($slug), ENT_QUOTES)
+                . '" class="hashtag" rel="tag">#' . $m[1] . '</a>';
+        }, $html);
+
     $paragraphs = preg_split('/\n{2,}/', $html) ?: [$html];
     $paragraphs = array_map(
         fn($p) => '<p>' . str_replace("\n", '<br>', trim($p)) . '</p>',
@@ -1298,6 +1417,50 @@ function format_content($text) {
     );
 
     return implode('', $paragraphs);
+}
+
+/**
+ * Collect mentions and hashtags for a post: resolves handles to actor URLs and
+ * builds the ActivityStreams tag list. Unresolvable mentions stay as text.
+ */
+function post_tags($text) {
+    global $base_url, $server;
+
+    $mentions = [];
+    $tags     = [];
+
+    if (preg_match_all('/(?<![\w@])@([\w.-]+)@([\w-]+(?:\.[\w-]+)+(?::\d+)?)/u', $text, $m, PREG_SET_ORDER)) {
+        foreach ($m as $match) {
+            $handle = '@' . $match[1] . '@' . $match[2];
+            if (isset($mentions[$handle])) { continue; }
+
+            $href = null;
+            if (strcasecmp($match[2], $server) === 0) {
+                $href = "{$base_url}ap/actor";
+            } else {
+                $details = getUserDetails($handle);
+                $href    = $details['profile'] ?? null;
+            }
+
+            if (is_string($href) && $href !== '') {
+                $mentions[$handle] = $href;
+                $tags[$handle] = ['type' => 'Mention', 'href' => $href, 'name' => $handle];
+            }
+        }
+    }
+
+    if (preg_match_all('/(?<![\w&#])#([\p{L}\p{N}_]{1,64})/u', $text, $hm)) {
+        foreach ($hm[1] as $tag) {
+            $slug = mb_strtolower($tag);
+            $tags['#' . $slug] = [
+                'type' => 'Hashtag',
+                'href' => "{$base_url}tags/" . rawurlencode($slug),
+                'name' => '#' . $tag,
+            ];
+        }
+    }
+
+    return ['mentions' => $mentions, 'tags' => array_values($tags)];
 }
 
 function panel_auth() {

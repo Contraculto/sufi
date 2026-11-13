@@ -69,7 +69,7 @@ function generate_signed_headers($message, $host, $path, $method) {
     ];
 }
 
-/** Deliver one activity now. Returns true on a 2xx response. */
+/** Deliver one activity now. Returns the HTTP status, or 0 if unreachable. */
 function raw_send($inbox, $message) {
     $parsed = parse_url((string) $inbox);
     if (empty($parsed['host'])) { return false; }
@@ -90,7 +90,11 @@ function raw_send($inbox, $message) {
     $response = @file_get_contents($inbox, false, $ctx);
     $status   = $http_response_header[0] ?? '';
 
-    return $response !== false && (bool) preg_match('#^HTTP/\S+\s+2\d\d#', $status);
+    if ($response === false || !preg_match('#^HTTP/\S+\s+(\d{3})#', $status, $m)) {
+        return 0;
+    }
+
+    return (int) $m[1];
 }
 
 // ── Delivery queue ────────────────────────────────────────────────────────────
@@ -198,7 +202,8 @@ function deliver_pending($limit = 25) {
             continue;
         }
 
-        if (raw_send($row['inbox'], $message)) {
+        $status = raw_send($row['inbox'], $message);
+        if ($status >= 200 && $status < 300) {
             \SUFI\System\Database\delete_delivery($db_handler, $row['id']);
             $sent++;
             continue;
@@ -207,7 +212,16 @@ function deliver_pending($limit = 25) {
         $attempts = (int) $row['attempts'] + 1;
         if ($attempts >= 10) {
             \SUFI\System\Database\delete_delivery($db_handler, $row['id']);
-            save_log('Delivery.Dropped', "inbox: {$row['inbox']} attempts: {$attempts}");
+
+            // Only give up on the follower when the server itself is gone or
+            // broken; a server 4xx-ing one activity is not a dead inbox.
+            $gone    = $status === 0 || $status === 410 || $status >= 500;
+            $removed = $gone
+                ? \SUFI\System\Database\remove_followers_by_inbox($db_handler, $row['inbox'])
+                : 0;
+
+            save_log('Delivery.Dropped',
+                "inbox: {$row['inbox']} status: {$status} attempts: {$attempts} followers_removed: {$removed}");
         } else {
             \SUFI\System\Database\retry_delivery(
                 $db_handler, $row['id'], $attempts, next_delivery_time($attempts)
@@ -347,13 +361,16 @@ function getDataFromURl($url) {
 }
 
 function getUserDetails($handle) {
+    global $remote_scheme;
+
     $parts = explode("@", ltrim((string) $handle, "@"));
     if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
         return ["profile" => null, "inbox" => null];
     }
     [$follow_name, $follow_server] = $parts;
+    $scheme = $remote_scheme ?? 'https';
 
-    $webfinger     = getDataFromURl("https://{$follow_server}/.well-known/webfinger?resource=acct:{$follow_name}@{$follow_server}");
+    $webfinger     = getDataFromURl("{$scheme}://{$follow_server}/.well-known/webfinger?resource=acct:{$follow_name}@{$follow_server}");
     $profile_url   = null;
     $profile_inbox = null;
 

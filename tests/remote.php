@@ -12,15 +12,30 @@ $uri      = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
 
 header('Content-Type: application/activity+json');
 
-if ($uri === '/u/bob') {
-    $id = "http://{$host}/u/bob";
+if ($uri === '/.well-known/webfinger') {
+    $name = 'bob';
+    if (preg_match('/acct:([^@]+)@/', (string) ($_GET['resource'] ?? ''), $m)) { $name = $m[1]; }
+    echo json_encode([
+        'subject' => "acct:{$name}@{$host}",
+        'links'   => [[
+            'rel'  => 'self',
+            'type' => 'application/activity+json',
+            'href' => "http://{$host}/u/{$name}",
+        ]],
+    ]);
+    exit;
+}
+
+if ($uri === '/u/bob' || $uri === '/u/carol') {
+    $name = $uri === '/u/carol' ? 'carol' : 'bob';
+    $id   = "http://{$host}/u/{$name}";
     $details = openssl_pkey_get_details(openssl_pkey_get_private(file_get_contents($key_path)));
     echo json_encode([
         '@context'          => ['https://www.w3.org/ns/activitystreams', 'https://w3id.org/security/v1'],
         'id'                => $id,
         'type'              => 'Person',
-        'preferredUsername' => 'bob',
-        'name'              => 'Bob',
+        'preferredUsername' => $name,
+        'name'              => ucfirst($name),
         'inbox'             => "http://{$host}/inbox",
         'endpoints'         => ['sharedInbox' => "http://{$host}/inbox"],
         'publicKey'         => [

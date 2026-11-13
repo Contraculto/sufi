@@ -30,6 +30,10 @@ $base_url  = 'https://' . $server . $base_path . '/';
 // for local development or the test suite (http://127.0.0.1).
 $allow_private_fetch = false;
 
+// Scheme used when looking up remote handles (webfinger). Only change this for
+// local test setups; real federation is https.
+$remote_scheme = 'https';
+
 // Posts per page in /ap/outbox.
 $outbox_page_size = 20;
 

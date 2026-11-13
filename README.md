@@ -309,6 +309,11 @@ password=your-secret&content=Hello+fediverse!
 
 Optional reply: add `in_reply_to=https://mastodon.social/@user/123456`
 
+Mentions (`@user@server`) and hashtags (`#tag`) are recognised automatically:
+they are linkified in the Note's HTML and added to its `tag` array (mentions are
+resolved through webfinger so they get a real `href`; unresolvable ones stay as
+plain text).
+
 Returns the ActivityPub `Create` activity JSON.
 
 ```bash
@@ -437,6 +442,13 @@ POST /ap/inbox/read
 id=42            # or id=all
 ```
 
+Delete items (they are local copies; this does not touch the remote activity):
+
+```
+POST /ap/inbox/delete
+id=42            # or id=read to drop everything already read
+```
+
 Older rows may have an empty `actor_handle`. Fill them in once after upgrading:
 
 ```bash
@@ -503,6 +515,7 @@ These are called automatically by other fediverse servers. You don't call them d
 | `GET` | `/ap/media/{file}` | Uploaded images referenced by posts |
 | `GET` | `/ap/nodeinfo` | NodeInfo 2.1 document (software, post count) |
 | `GET` | `/.well-known/nodeinfo` | Discovery link for the NodeInfo document |
+| `GET` | `/tags/{tag}` | Simple HTML page listing your posts that use a hashtag |
 | `GET` | `/ap/follow?uri={uri}` | Remote follow redirect for Mastodon's subscribe flow |
 | `GET` | `/@alice` | HTML profile page |
 
@@ -567,6 +580,11 @@ rm sys/sufi.sqlite
 - The panel logs in by posting back to `/sufi/` itself, so it works without extra rewrite rules for `/sufi/login` or `/sufi/logout`
 - Remote fetches are limited to HTTPS and public IPs, with a 4s timeout, no redirects, and a short-lived cache — the inbox is public, so this matters
 - Failed signature checks and delivery failures append to a single rotated `sys/logs/security.log`, never one file per request
+- Inbound `Update` of an actor refreshes its stored profile; `Move` transfers
+  the follower/following entries to the new account
+- After 10 failed deliveries the activity is dropped; if the inbox was
+  unreachable or returned 410/5xx, the follower is removed as well (4xx on one
+  activity is not treated as a dead server)
 - Blocked actors are dropped before signature verification
 - Panel login requires a CSRF token and is rate-limited per IP; sessions expire
   after `$session_lifetime` of inactivity; the panel sends CSP / nosniff /
