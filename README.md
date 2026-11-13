@@ -179,6 +179,8 @@ $max_post_chars      = 500;
 $max_upload_bytes    = 5242880;
 $max_image_pixels    = 40000000;  // reject decompression bombs
 $max_image_dimension = 2560;      // downscale larger images (needs GD)
+$thumb_max_dimension = 320;       // panel previews (needs GD)
+$collection_page_size = 40;       // followers/following per page
 $inbox_retention_days = 90;
 $session_lifetime     = 43200;  // panel idle logout, seconds
 $login_max_attempts   = 5;      // per 15 minutes, per IP
@@ -316,6 +318,10 @@ password=your-secret&content=Hello+fediverse!
 
 Optional reply: add `in_reply_to=https://mastodon.social/@user/123456`
 
+`visibility` is `public` (default), `unlisted` or `private` (followers only;
+Mastodon calls it "followers"). `spoiler_text` sets a content warning, which is
+sent as `summary` plus `sensitive: true`.
+
 Mentions (`@user@server`) and hashtags (`#tag`) are recognised automatically:
 they are linkified in the Note's HTML and added to its `tag` array (mentions are
 resolved through webfinger so they get a real `href`; unresolvable ones stay as
@@ -419,7 +425,9 @@ The older single `attachment` + `attachment_description` fields still work.
 JPEG/PNG/GIF/WebP only, limited by `$max_upload_bytes`. Images above
 `$max_image_pixels` are rejected before decoding; longer sides above
 `$max_image_dimension` are downscaled when the GD extension is available (GIFs
-are left alone so animation survives). Uploaded files are deleted when the post
+are left alone so animation survives), EXIF orientation is applied to JPEGs, and
+a `$thumb_max_dimension` preview is generated for the panel (the upload response
+returns it as `thumb`). Uploaded files are deleted when the post
 that used them is deleted; files that never made it into a post are removed by
 the daily prune once they are a day old.
 
@@ -529,8 +537,8 @@ These are called automatically by other fediverse servers. You don't call them d
 | `GET` | `/ap/actor` | Your ActivityPub profile + public key |
 | `POST` | `/ap/inbox` | Receives Follow, Undo, and other activities |
 | `GET` | `/ap/outbox` | Paginated `OrderedCollection`; pages via `?page=true&max_id=` |
-| `GET` | `/ap/followers` | List of actor URIs following you |
-| `GET` | `/ap/following` | List of actor URIs you follow |
+| `GET` | `/ap/followers` | Paginated collection of actor URIs following you |
+| `GET` | `/ap/following` | Paginated collection of actor URIs you follow |
 | `GET` | `/ap/likes` | Objects you have liked |
 | `GET` | `/ap/post/{guid}` | A single Note object |
 | `GET` | `/ap/media/{file}` | Uploaded images referenced by posts |

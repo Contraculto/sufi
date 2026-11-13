@@ -36,8 +36,9 @@ $allow_private_fetch = false;
 // local test setups; real federation is https.
 $remote_scheme = 'https';
 
-// Posts per page in /ap/outbox.
-$outbox_page_size = 20;
+// Posts per page in /ap/outbox, followers/following per page.
+$outbox_page_size     = 20;
+$collection_page_size = 40;
 
 // Post limits.
 $max_post_chars   = 500;
@@ -47,6 +48,7 @@ $max_upload_bytes = 5 * 1024 * 1024;
 // (requires GD; without it the image is stored as-is).
 $max_image_pixels    = 40000000;
 $max_image_dimension = 2560;
+$thumb_max_dimension = 320;
 
 // Ops: inbox retention (days), panel idle logout (seconds), login rate limit.
 $inbox_retention_days = 90;

@@ -27,7 +27,10 @@ foreach (glob($root . '/sys/uploads/*') ?: [] as $file) {
         "SELECT COUNT(*) FROM Post WHERE data LIKE " . $db_handler->quote('%' . $name . '%')
     )->fetchColumn();
 
-    if ($used === 0 && @unlink($file)) { $orphans++; }
+    if ($used === 0 && @unlink($file)) {
+        @unlink(preg_replace('/\.([a-z]+)$/', '.thumb.$1', $file));
+        $orphans++;
+    }
 }
 
 echo date('c') . " pruned inbox items older than {$days}d: {$deleted}, orphaned uploads: {$orphans}\n";

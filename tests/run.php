@@ -279,6 +279,32 @@ check('overlong post rejected', 400, $r[0]);
 $r = expect('outbox', 200, http('GET', "{$instance}/ap/outbox"));
 check('outbox has two items', 2, json_body($r)['totalItems'] ?? null);
 
+section('Visibility and content warnings');
+
+$r = expect('private post', 200, post("{$instance}/ap/post", [
+    'content' => 'followers only', 'visibility' => 'private', 'password' => 'testpass',
+]));
+$private = json_body($r)['object'];
+check('private post audience', ["{$instance}/ap/followers"], $private['to'] ?? null);
+check('private post cc empty', [], $private['cc'] ?? null);
+
+$r = expect('unlisted post', 200, post("{$instance}/ap/post", [
+    'content' => 'unlisted', 'visibility' => 'unlisted', 'password' => 'testpass',
+]));
+$unlisted = json_body($r)['object'];
+check('unlisted post to followers', ["{$instance}/ap/followers"], $unlisted['to'] ?? null);
+check('unlisted post cc public', ['https://www.w3.org/ns/activitystreams#Public'], $unlisted['cc'] ?? null);
+
+$r = expect('post with content warning', 200, post("{$instance}/ap/post", [
+    'content' => 'the spoiler', 'spoiler_text' => 'spoilers ahead', 'password' => 'testpass',
+]));
+$cw = json_body($r)['object'];
+check('content warning summary', true, str_contains((string) ($cw['summary'] ?? ''), 'spoilers ahead'));
+check('content warning sensitive', true, $cw['sensitive'] ?? null);
+
+$r = post("{$instance}/ap/post", ['content' => 'x', 'visibility' => 'secret', 'password' => 'testpass']);
+check('invalid visibility rejected', 400, $r[0]);
+
 section('Mentions and hashtags');
 
 $remote_host = parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT);
@@ -461,10 +487,30 @@ $r = expect('wide image upload', 200, http('POST', "{$instance}/ap/upload", $bod
 $wide = json_body($r);
 $wide_file = $root_dir . '/sys/uploads/' . basename((string) parse_url($wide['url'], PHP_URL_PATH));
 $wide_dim  = getimagesize($wide_file);
+check('upload reports a thumbnail', true, !empty($wide['thumb']));
+$thumb_file = $root_dir . '/sys/uploads/' . basename((string) parse_url($wide['thumb'], PHP_URL_PATH));
+
 if (function_exists('imagecreatetruecolor')) {
     check('wide image downscaled', 2560, $wide_dim[0] ?? null);
+    $thumb_dim = getimagesize($thumb_file);
+    check('thumbnail generated', true, is_file($thumb_file));
+    check('thumbnail is small', true, max($thumb_dim[0] ?? 9999, $thumb_dim[1] ?? 9999) <= 320);
 } else {
     check('wide image kept without gd', 3000, $wide_dim[0] ?? null);
+}
+
+// A post that used the image takes both files with it when deleted.
+$r = expect('post with wide image', 200, post("{$instance}/ap/post", [
+    'content'     => 'wide picture',
+    'attachments' => json_encode([['url' => $wide['url']]]),
+    'password'    => 'testpass',
+]));
+$wide_guid = basename((string) (json_body($r)['object']['id'] ?? ''));
+expect('delete wide post', 200, post("{$instance}/ap/post/{$wide_guid}", ['action' => 'delete', 'password' => 'testpass']));
+clearstatcache();
+check('wide image removed', false, is_file($wide_file));
+if (function_exists('imagecreatetruecolor')) {
+    check('wide thumbnail removed', false, is_file($thumb_file));
 }
 
 [$body, $type] = multipart([], 'huge.png', 'image/png', png_header(8000, 8000));
@@ -911,12 +957,43 @@ $r = expect('actor after key rotation', 200, http('GET', "{$prefix}/sufi/ap/acto
 check('rotated key is served', trim(openssl_pkey_get_details($new_res)['key']), trim(json_body($r)['publicKey']['publicKeyPem'] ?? ''));
 check('actor not duplicated', 1, count(db($pdb_path, 'SELECT * FROM Actor')));
 
+// ── follower collection pagination ────────────────────────────────────────────
+
+section('Follower collection pagination');
+
+for ($i = 1; $i <= 3; $i++) {
+    db($db_path, "INSERT OR REPLACE INTO Follower (actor_uri, inbox, data) VALUES (?, ?, '{}')",
+        ["https://paginated.example/u/{$i}", 'https://paginated.example/inbox']);
+}
+
+$r = expect('followers collection', 200, http('GET', "{$instance}/ap/followers"));
+$collection = json_body($r);
+$total      = (int) ($collection['totalItems'] ?? 0);
+check('collection type', 'OrderedCollection', $collection['type'] ?? null);
+check('collection counts rows', true, $total >= 3);
+check('collection has last page', true, str_contains((string) ($collection['last'] ?? ''), 'max_id='));
+
+$url        = $collection['first'];
+$item_count = 0;
+$pages      = 0;
+$seen       = [];
+while ($url !== null && $pages < 20) {
+    $page = json_body(expect('followers page ' . ($pages + 1), 200, http('GET', $url)));
+    check('followers page type', 'OrderedCollectionPage', $page['type'] ?? null);
+    foreach ($page['orderedItems'] ?? [] as $uri) { $seen[$uri] = true; $item_count++; }
+    $url = $page['next'] ?? null;
+    $pages++;
+}
+check('pages cover all followers', $total, $item_count);
+check('no duplicate followers', $total, count($seen));
+check('follower page size respected', (int) ceil($total / 2), $pages);
+
 // ── maintenance scripts ───────────────────────────────────────────────────────
 
 section('Maintenance');
 
 $schema = db($db_path, 'PRAGMA user_version');
-check('schema version', 3, (int) ($schema[0]['user_version'] ?? 0));
+check('schema version', 4, (int) ($schema[0]['user_version'] ?? 0));
 $columns = array_column(db($db_path, 'PRAGMA table_info(InboxItem)'), 'name');
 check('inbox read column exists', true, in_array('is_read', $columns, true));
 

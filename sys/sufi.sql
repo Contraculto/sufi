@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS Post (
     content    TEXT NOT NULL,
     published  TEXT NOT NULL DEFAULT (datetime('now')),
     in_reply   TEXT DEFAULT NULL,
+    visibility TEXT NOT NULL DEFAULT 'public',
+    summary    TEXT NOT NULL DEFAULT '',
     data       TEXT NOT NULL DEFAULT '{}'
 );
 

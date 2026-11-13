@@ -14,7 +14,7 @@ function connect_database() {
     }
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 function init_schema($DBH) {
     $version = (int) $DBH->query('PRAGMA user_version')->fetchColumn();
@@ -32,6 +32,12 @@ function init_schema($DBH) {
         add_column($DBH, 'Follower', 'follow_id', 'TEXT');
         add_column($DBH, 'Following', 'follow_id', 'TEXT');
         add_column($DBH, 'Following', 'state', "TEXT NOT NULL DEFAULT 'accepted'");
+    }
+
+    if ($version < 4) {
+        // v4: post visibility + content warning
+        add_column($DBH, 'Post', 'visibility', "TEXT NOT NULL DEFAULT 'public'");
+        add_column($DBH, 'Post', 'summary', "TEXT NOT NULL DEFAULT ''");
     }
 
     $DBH->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
@@ -170,6 +176,42 @@ function get_following($DBH) {
     return get($DBH, "SELECT * FROM Following ORDER BY created_at DESC");
 }
 
+function count_followers($DBH) {
+    return (int) $DBH->query("SELECT COUNT(*) FROM Follower")->fetchColumn();
+}
+
+function oldest_follower_id($DBH) {
+    return (int) $DBH->query("SELECT COALESCE(MIN(id), 0) FROM Follower")->fetchColumn();
+}
+
+function get_followers_page($DBH, $limit, $max_id = null) {
+    if ($max_id === null) {
+        return get($DBH, "SELECT * FROM Follower ORDER BY id DESC LIMIT ?", [(int) $limit]);
+    }
+    return get($DBH,
+        "SELECT * FROM Follower WHERE id <= ? ORDER BY id DESC LIMIT ?",
+        [(int) $max_id, (int) $limit]
+    );
+}
+
+function count_following($DBH) {
+    return (int) $DBH->query("SELECT COUNT(*) FROM Following")->fetchColumn();
+}
+
+function oldest_following_id($DBH) {
+    return (int) $DBH->query("SELECT COALESCE(MIN(id), 0) FROM Following")->fetchColumn();
+}
+
+function get_following_page($DBH, $limit, $max_id = null) {
+    if ($max_id === null) {
+        return get($DBH, "SELECT * FROM Following ORDER BY id DESC LIMIT ?", [(int) $limit]);
+    }
+    return get($DBH,
+        "SELECT * FROM Following WHERE id <= ? ORDER BY id DESC LIMIT ?",
+        [(int) $max_id, (int) $limit]
+    );
+}
+
 function get_following_actor($DBH, $actor_uri) {
     $rows = get($DBH, "SELECT * FROM Following WHERE actor_uri = ? LIMIT 1", [$actor_uri]);
     return $rows[0] ?? null;
@@ -242,10 +284,12 @@ function get_post($DBH, $guid) {
     return $rows[0] ?? null;
 }
 
-function add_post($DBH, $guid, $type, $content, $published, $in_reply, $data) {
+function add_post($DBH, $guid, $type, $content, $published, $in_reply, $data,
+    $visibility = 'public', $summary = '') {
     run($DBH,
-        "INSERT INTO Post (guid, type, content, published, in_reply, data) VALUES (?, ?, ?, ?, ?, ?)",
-        [$guid, $type, $content, $published, $in_reply, json_encode($data)]
+        "INSERT INTO Post (guid, type, content, published, in_reply, visibility, summary, data)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [$guid, $type, $content, $published, $in_reply, $visibility, $summary, json_encode($data)]
     );
 }
 
@@ -333,10 +377,10 @@ function delete_post($DBH, $guid) {
     run($DBH, "DELETE FROM Post WHERE guid = ?", [$guid]);
 }
 
-function update_post($DBH, $guid, $content, $data) {
+function update_post($DBH, $guid, $content, $data, $visibility = 'public', $summary = '') {
     run($DBH,
-        "UPDATE Post SET content = ?, data = ? WHERE guid = ?",
-        [$content, json_encode($data), $guid]
+        "UPDATE Post SET content = ?, data = ?, visibility = ?, summary = ? WHERE guid = ?",
+        [$content, json_encode($data), $visibility, $summary, $guid]
     );
 }
 

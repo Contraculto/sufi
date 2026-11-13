@@ -27,6 +27,7 @@ $max_post_chars       = (int) ($max_post_chars ?? 500);
 $max_upload_bytes     = (int) ($max_upload_bytes ?? 5 * 1024 * 1024);
 $max_image_pixels     = (int) ($max_image_pixels ?? 40000000);
 $max_image_dimension  = (int) ($max_image_dimension ?? 2560);
+$thumb_max_dimension  = (int) ($thumb_max_dimension ?? 320);
 $inbox_retention_days = (int) ($inbox_retention_days ?? 90);
 $session_lifetime     = (int) ($session_lifetime ?? 43200);
 $login_max_attempts   = (int) ($login_max_attempts ?? 5);
@@ -233,7 +234,7 @@ switch ($request) {
             require __DIR__ . "/templates/home.php";
         } elseif (preg_match('#^/tags/([\p{L}\p{N}_-]{1,64})$#u', $request, $m)) {
             tag_page($m[1]);
-        } elseif (preg_match('#^/ap/media/([a-f0-9]{32}\.(?:jpg|png|gif|webp))$#', $request, $m)) {
+        } elseif (preg_match('#^/ap/media/([a-f0-9]{32}(?:\.thumb)?\.(?:jpg|png|gif|webp))$#', $request, $m)) {
             serve_media($m[1]);
         } elseif (preg_match('#^/ap/post/([a-f0-9-]+)$#', $request, $m)) {
             $guid   = $m[1];
@@ -636,9 +637,22 @@ function create_post_endpoint() {
     }
     require_csrf_if_session();
 
-    $content  = trim((string) ($_POST['content']     ?? ($body['content']     ?? '')));
-    $in_reply = trim((string) ($_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? '')));
+    $content    = trim((string) ($_POST['content']     ?? ($body['content']     ?? '')));
+    $in_reply   = trim((string) ($_POST['in_reply_to'] ?? ($body['in_reply_to'] ?? '')));
+    $visibility = (string) ($_POST['visibility'] ?? ($body['visibility'] ?? 'public'));
+    $spoiler    = trim((string) ($_POST['spoiler_text'] ?? ($body['spoiler_text'] ?? '')));
     $attachments = requested_attachments();
+
+    if (!in_array($visibility, ['public', 'unlisted', 'private'], true)) {
+        http_response_code(400);
+        echo "Invalid visibility";
+        return;
+    }
+    if (mb_strlen($spoiler) > 200) {
+        http_response_code(400);
+        echo "Content warning is too long";
+        return;
+    }
 
     if ($attachments === null) {
         http_response_code(400);
@@ -661,18 +675,20 @@ function create_post_endpoint() {
         return;
     }
 
-    $activity = create_post($content, $in_reply ?: null, $attachments);
+    $activity = create_post($content, $in_reply ?: null, $attachments, $visibility, $spoiler);
     header('Content-Type: application/activity+json; charset=utf-8');
     echo json_encode($activity);
 }
 
-function create_post($content, $in_reply_to = null, array $attachments = []) {
+function create_post($content, $in_reply_to = null, array $attachments = [],
+    $visibility = 'public', $spoiler = '') {
     global $base_url, $db_handler;
 
     $guid      = uuid();
     $base      = $base_url;
     $published = date('c');
     $tags      = post_tags($content);
+    $audience  = post_audience($visibility);
 
     $note = [
         "@context"     => "https://www.w3.org/ns/activitystreams",
@@ -681,12 +697,15 @@ function create_post($content, $in_reply_to = null, array $attachments = []) {
         "published"    => $published,
         "attributedTo" => "{$base}ap/actor",
         "content"      => format_content($content, $tags['mentions']),
-        "to"           => ["https://www.w3.org/ns/activitystreams#Public"],
-        "cc"           => ["{$base}ap/followers"],
+        "to"           => $audience['to'],
+        "cc"           => $audience['cc'],
     ];
     if ($in_reply_to) { $note["inReplyTo"] = $in_reply_to; }
     if ($tags['tags']) { $note["tag"] = $tags['tags']; }
-
+    if ($spoiler !== '') {
+        $note['summary']   = format_content($spoiler);
+        $note['sensitive'] = true;
+    }
     if ($attachments) { $note['attachment'] = $attachments; }
 
     $activity = [
@@ -695,15 +714,32 @@ function create_post($content, $in_reply_to = null, array $attachments = []) {
         "type"      => "Create",
         "actor"     => "{$base}ap/actor",
         "published" => $published,
-        "to"        => ["https://www.w3.org/ns/activitystreams#Public"],
-        "cc"        => ["{$base}ap/followers"],
+        "to"        => $audience['to'],
+        "cc"        => $audience['cc'],
         "object"    => $note,
     ];
 
-    System\Database\add_post($db_handler, $guid, 'Note', $content, $published, $in_reply_to, $activity);
+    System\Database\add_post(
+        $db_handler, $guid, 'Note', $content, $published, $in_reply_to, $activity,
+        $visibility, $spoiler
+    );
     sendToFollowers($activity);
 
     return $activity;
+}
+
+/** to/cc for a visibility level. Matches Mastodon's conventions. */
+function post_audience($visibility) {
+    global $base_url;
+
+    $public    = 'https://www.w3.org/ns/activitystreams#Public';
+    $followers = "{$base_url}ap/followers";
+
+    return match ($visibility) {
+        'private'  => ['to' => [$followers], 'cc' => []],
+        'unlisted' => ['to' => [$followers], 'cc' => [$public]],
+        default    => ['to' => [$public], 'cc' => [$followers]],
+    };
 }
 
 function show_post($guid) {
@@ -768,7 +804,10 @@ function delete_post_endpoint($guid) {
         $used = (int) $db_handler->query(
             "SELECT COUNT(*) FROM Post WHERE data LIKE " . $db_handler->quote('%' . $file . '%')
         )->fetchColumn();
-        if ($used === 0) { @unlink(__DIR__ . '/sys/uploads/' . $file); }
+        if ($used === 0) {
+            @unlink(__DIR__ . '/sys/uploads/' . $file);
+            @unlink(__DIR__ . '/sys/uploads/' . preg_replace('/\.([a-z]+)$/', '.thumb.$1', $file));
+        }
     }
 
     echo "Deleted";
@@ -791,6 +830,19 @@ function update_post_endpoint($guid) {
     $post = System\Database\get_post($db_handler, $guid);
     if (!$post) { http_response_code(404); echo "Not found"; return; }
 
+    $visibility = (string) ($_POST['visibility'] ?? ($body['visibility'] ?? ($post['visibility'] ?? 'public')));
+    $spoiler    = trim((string) ($_POST['spoiler_text'] ?? ($body['spoiler_text'] ?? ($post['summary'] ?? ''))));
+    if (!in_array($visibility, ['public', 'unlisted', 'private'], true)) {
+        http_response_code(400);
+        echo "Invalid visibility";
+        return;
+    }
+    if (mb_strlen($spoiler) > 200) {
+        http_response_code(400);
+        echo "Content warning is too long";
+        return;
+    }
+
     $updated   = date('c');
     $base      = $base_url;
     $actor_url = "{$base}ap/actor";
@@ -799,6 +851,7 @@ function update_post_endpoint($guid) {
     $previous = $previous['object'] ?? $previous;
     $media    = $previous['attachment'] ?? null;
     $tags     = post_tags($content);
+    $audience = post_audience($visibility);
 
     $note = [
         "@context"     => "https://www.w3.org/ns/activitystreams",
@@ -808,24 +861,28 @@ function update_post_endpoint($guid) {
         "updated"      => $updated,
         "attributedTo" => $actor_url,
         "content"      => format_content($content, $tags['mentions']),
-        "to"           => ["https://www.w3.org/ns/activitystreams#Public"],
-        "cc"           => ["{$base}ap/followers"],
+        "to"           => $audience['to'],
+        "cc"           => $audience['cc'],
     ];
     if (!empty($previous['inReplyTo'])) { $note['inReplyTo'] = $previous['inReplyTo']; }
     if ($tags['tags']) { $note['tag'] = $tags['tags']; }
     if (is_array($media)) { $note['attachment'] = $media; }
+    if ($spoiler !== '') {
+        $note['summary']   = format_content($spoiler);
+        $note['sensitive'] = true;
+    }
     $activity = [
         "@context"  => "https://www.w3.org/ns/activitystreams",
         "id"        => "{$base}ap/activity/" . uuid(),
         "type"      => "Update",
         "actor"     => $actor_url,
         "published" => $updated,
-        "to"        => ["https://www.w3.org/ns/activitystreams#Public"],
-        "cc"        => ["{$base}ap/followers"],
+        "to"        => $audience['to'],
+        "cc"        => $audience['cc'],
         "object"    => $note,
     ];
 
-    System\Database\update_post($db_handler, $guid, $content, $activity);
+    System\Database\update_post($db_handler, $guid, $content, $activity, $visibility, $spoiler);
     sendToFollowers($activity);
     header('Content-Type: application/activity+json; charset=utf-8');
     echo json_encode($activity);
@@ -1248,7 +1305,7 @@ function serve_media($name) {
 }
 
 function upload_media() {
-    global $base_url, $max_upload_bytes, $max_image_pixels, $max_image_dimension;
+    global $base_url, $max_upload_bytes, $max_image_pixels, $max_image_dimension, $thumb_max_dimension;
 
     if (!panel_auth()) { http_response_code(401); echo 'Unauthorized'; return; }
     require_csrf_if_session();
@@ -1297,13 +1354,24 @@ function upload_media() {
     }
 
     $max = $max_image_dimension;
-    if ($max > 0 && ($width > $max || $height > $max)) {
-        resize_image("{$dir}/{$name}", $ext, $max); // no-op without GD
+    if (function_exists('imagecreatetruecolor')) {
+        fix_orientation("{$dir}/{$name}", $ext);
+        if ($max > 0 && ($width > $max || $height > $max)) {
+            resize_image("{$dir}/{$name}", $ext, $max);
+        }
+    }
+
+    $base      = pathinfo($name, PATHINFO_FILENAME);
+    $thumb_url = null;
+    if (function_exists('imagecreatetruecolor')
+        && make_thumbnail("{$dir}/{$name}", "{$dir}/{$base}.thumb.{$ext}", $ext, $thumb_max_dimension)) {
+        $thumb_url = "{$base_url}ap/media/{$base}.thumb.{$ext}";
     }
 
     header('Content-Type: application/json');
     echo json_encode([
         'url'       => "{$base_url}ap/media/{$name}",
+        'thumb'     => $thumb_url ?: "{$base_url}ap/media/{$name}",
         'mediaType' => MEDIA_TYPES[$ext],
         'name'      => (string) ($file['name'] ?? ''),
     ]);
@@ -1386,6 +1454,72 @@ function resize_image($path, $ext, $max) {
 
     imagedestroy($source);
     imagedestroy($target);
+}
+
+/** Rotate JPEGs according to their EXIF orientation (no-op without exif/GD). */
+function fix_orientation($path, $ext) {
+    if ($ext !== 'jpg' || !function_exists('exif_read_data')) { return; }
+
+    $exif = @exif_read_data($path);
+    $orientation = (int) ($exif['Orientation'] ?? 1);
+    if ($orientation < 2 || $orientation > 8) { return; }
+
+    $image = @imagecreatefromjpeg($path);
+    if (!$image) { return; }
+
+    $rotated = match ($orientation) {
+        3 => imagerotate($image, 180, 0),
+        6 => imagerotate($image, -90, 0),
+        8 => imagerotate($image, 90, 0),
+        default => $image, // mirrored orientations are rare; leave them alone
+    };
+
+    if ($rotated) {
+        imagejpeg($rotated, $path, 92);
+        if ($rotated !== $image) { imagedestroy($rotated); }
+    }
+    imagedestroy($image);
+}
+
+/** Write a small preview next to the original. Returns false when unnecessary. */
+function make_thumbnail($path, $thumb_path, $ext, $max) {
+    if ($max <= 0) { return false; }
+
+    $source = match ($ext) {
+        'jpg'  => @imagecreatefromjpeg($path),
+        'png'  => @imagecreatefrompng($path),
+        'gif'  => @imagecreatefromgif($path),
+        'webp' => @imagecreatefromwebp($path),
+        default => null,
+    };
+    if (!$source) { return false; }
+
+    $width  = imagesx($source);
+    $height = imagesy($source);
+    $scale  = min(1, $max / max($width, $height));
+    if ($scale >= 1) { imagedestroy($source); return false; }
+
+    $new_w  = max(1, (int) round($width * $scale));
+    $new_h  = max(1, (int) round($height * $scale));
+    $target = imagecreatetruecolor($new_w, $new_h);
+
+    if ($ext === 'png' || $ext === 'webp') {
+        imagealphablending($target, false);
+        imagesavealpha($target, true);
+    }
+    imagecopyresampled($target, $source, 0, 0, 0, 0, $new_w, $new_h, $width, $height);
+
+    $ok = match ($ext) {
+        'jpg'  => imagejpeg($target, $thumb_path, 80),
+        'png'  => imagepng($target, $thumb_path, 6),
+        'gif'  => imagegif($target, $thumb_path),
+        'webp' => imagewebp($target, $thumb_path, 80),
+        default => false,
+    };
+
+    imagedestroy($source);
+    imagedestroy($target);
+    return (bool) $ok;
 }
 
 /** Local upload filenames referenced by a stored activity. */

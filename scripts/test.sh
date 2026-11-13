@@ -60,6 +60,7 @@ make_instance() {
 \$remote_scheme = 'http';
 \$allow_private_fetch = $allow_private;
 \$outbox_page_size = 2;
+\$collection_page_size = 2;
 PHP
 }
 

@@ -145,6 +145,8 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 .attach-row input[type=text] { flex: 1; padding: .3rem .5rem; background: var(--surface);
     border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .8rem; }
 .attach-row input[type=file] { color: var(--muted); font-size: .75rem; max-width: 45%; }
+.attach-row select { padding: .3rem .5rem; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text); font-size: .8rem; }
 #attach-preview img { max-height: 60px; border-radius: var(--radius); display: block; }
 .attach-item { display: flex; gap: .5rem; align-items: center; margin-top: .4rem; }
 .attach-item input[type=text] { flex: 1; padding: .3rem .5rem; background: var(--surface);
@@ -170,6 +172,14 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
       <input id="reply" type="url" placeholder="reply to (optional URL)">
       <span id="charcount"></span>
       <button class="primary" onclick="post()">Post</button>
+    </div>
+    <div class="attach-row">
+      <select id="visibility">
+        <option value="public">public</option>
+        <option value="unlisted">unlisted</option>
+        <option value="private">followers only</option>
+      </select>
+      <input type="text" id="cw" placeholder="content warning (optional)">
     </div>
     <div class="attach-row">
       <input type="file" id="image" multiple accept="image/jpeg,image/png,image/gif,image/webp" onchange="attachImages()">
@@ -267,7 +277,7 @@ async function attachImages() {
         if (!r.ok) { setStatus('upload failed: ' + await r.text(), false); continue; }
 
         const media = await r.json();
-        attachments.push({ url: media.url, description: '' });
+        attachments.push({ url: media.url, thumb: media.thumb || media.url, description: '' });
     }
 
     input.value = '';
@@ -279,7 +289,7 @@ function renderAttachments() {
     const box = document.getElementById('attach-preview');
     box.innerHTML = attachments.map((a, i) => `
         <div class="attach-item">
-            <img src="${esc(a.url)}" alt="">
+            <img src="${esc(a.thumb)}" alt="">
             <input type="text" placeholder="alt text" value="${esc(a.description)}"
                    oninput="attachments[${i}].description=this.value">
             <button class="ghost" onclick="removeAttachment(${i})">remove</button>
@@ -305,8 +315,11 @@ async function post() {
     const btn = document.querySelector('button.primary');
     btn.disabled = true;
     setStatus('posting...');
-    const data = { content };
+    const visibility = document.getElementById('visibility').value;
+    const spoiler    = document.getElementById('cw').value.trim();
+    const data = { content, visibility };
     if (in_reply) data.in_reply_to = in_reply;
+    if (spoiler) data.spoiler_text = spoiler;
     if (attachments.length) {
         data.attachments = JSON.stringify(attachments.map(a => ({
             url: a.url, description: a.description
@@ -317,6 +330,8 @@ async function post() {
     if (r.ok) {
         document.getElementById('content').value = '';
         document.getElementById('reply').value = '';
+        document.getElementById('cw').value = '';
+        document.getElementById('visibility').value = 'public';
         clearAttachments();
         countChars();
         setStatus('posted');
@@ -334,8 +349,11 @@ async function loadPosts() {
         const guid    = p.guid;
         const content = esc(p.content);
         const date    = p.published ? p.published.slice(0, 10) : '';
+        const vis     = p.visibility && p.visibility !== 'public'
+            ? `<span class="kind">${esc(p.visibility)}</span>` : '';
+        const cw      = p.summary ? `<span class="kind">cw: ${esc(p.summary)}</span>` : '';
         return `<div class="item" id="post-${guid}">
-            <div class="item-meta"><span>${date}</span></div>
+            <div class="item-meta"><span>${date}</span>${vis}${cw}</div>
             <div class="item-body">${content}</div>
             <div class="item-actions">
                 <button class="ghost" onclick="startEdit('${guid}')">edit</button>
