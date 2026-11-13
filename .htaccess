@@ -15,6 +15,6 @@ RewriteRule ^sys/ - [F,L]
 # existing site. If your site already has its own .htaccess router, add these
 # rules BEFORE it in the main .htaccess instead of using this file.
 
-RewriteCond %{REQUEST_URI} ^/(\.well-known/(webfinger|host-meta|nodeinfo)|ap(/|$)|@[^/]+/?$)
+RewriteCond %{REQUEST_URI} ^/(\.well-known/(webfinger|host-meta|nodeinfo)|ap(/|$)|tags(/|$)|@[^/]+/?$)
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^ index.php [QSA,L]
