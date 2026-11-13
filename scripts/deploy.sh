@@ -50,10 +50,14 @@ if [[ $DRY -eq 1 ]]; then
         --exclude 'sys/' --exclude '.git/' --exclude 'tests/' --exclude 'scripts/' \
         --exclude '.github/' --exclude '*~' \
         "$ROOT/" "root@$HOST:$REMOTE_DIR/"
-    rsync -navc "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "root@$HOST:$REMOTE_DIR/sys/"
+    rsync -navc "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "$ROOT/sys/delivery.php" "root@$HOST:$REMOTE_DIR/sys/"
+    rsync -navc "$ROOT/scripts/ops/deliver.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
     echo
     log "DRY-RUN — runtime files stay untouched:"
     echo "  sys/config.php  sys/private.pem  sys/public.pem  sys/sufi.sqlite  sys/logs/"
+    echo
+    log "DRY-RUN — cron entry for the delivery worker:"
+    echo "  * * * * * www-data php $REMOTE_DIR/scripts/ops/deliver.php"
     exit 0
 fi
 
@@ -65,10 +69,18 @@ rsync -a --delete \
     --exclude 'sys/' --exclude '.git/' --exclude 'tests/' --exclude 'scripts/' \
     --exclude '.github/' --exclude '*~' \
     "$ROOT/" "root@$HOST:$REMOTE_DIR/"
-rsync -a "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "root@$HOST:$REMOTE_DIR/sys/"
+rsync -a "$ROOT/sys/database.php" "$ROOT/sys/sufi.sql" "$ROOT/sys/delivery.php" "root@$HOST:$REMOTE_DIR/sys/"
+ssh "root@$HOST" "mkdir -p $REMOTE_DIR/scripts/ops"
+rsync -a "$ROOT/scripts/ops/deliver.php" "root@$HOST:$REMOTE_DIR/scripts/ops/"
 
 log "linting on the server"
-ssh "root@$HOST" "php -l $REMOTE_DIR/index.php > /dev/null" || die "syntax error on server"
+ssh "root@$HOST" "php -l $REMOTE_DIR/index.php > /dev/null \
+    && php -l $REMOTE_DIR/sys/delivery.php > /dev/null \
+    && php -l $REMOTE_DIR/scripts/ops/deliver.php > /dev/null" \
+    || die "syntax error or missing file on server"
+
+log "installing delivery worker cron"
+ssh "root@$HOST" "printf '# SUFI delivery worker\\n* * * * * www-data php $REMOTE_DIR/scripts/ops/deliver.php >/dev/null 2>&1\\n' > /etc/cron.d/sufi-deliver && chmod 644 /etc/cron.d/sufi-deliver && cat /etc/cron.d/sufi-deliver"
 
 log "checking federation endpoints"
 for path in "/.well-known/webfinger" "/ap/actor" "/ap/outbox"; do

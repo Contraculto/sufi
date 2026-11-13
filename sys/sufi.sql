@@ -52,3 +52,21 @@ CREATE TABLE IF NOT EXISTS InboxItem (
     data       TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS Block (
+    actor_uri  TEXT PRIMARY KEY,
+    inbox      TEXT NOT NULL DEFAULT '',
+    data       TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS Delivery (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    inbox      TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    next_try   TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS Delivery_next_try ON Delivery (next_try);

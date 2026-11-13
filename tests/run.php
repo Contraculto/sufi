@@ -192,6 +192,41 @@ check('update activity type', 'Update', json_body($r)['type'] ?? null);
 $r = expect('fetch updated post', 200, http('GET', "{$instance}/ap/post/{$guid}"));
 check('updated content', 'edited', json_body($r)['content'] ?? null);
 
+// ── outbox pagination ────────────────────────────────────────────────────────
+
+section('Outbox pagination');
+
+for ($i = 0; $i < 4; $i++) {
+    expect("seed post {$i}", 200, post("{$instance}/ap/post", ['content' => "page {$i}", 'password' => 'testpass']));
+}
+
+$r = expect('outbox collection', 200, http('GET', "{$instance}/ap/outbox"));
+$collection = json_body($r);
+$total      = (int) ($collection['totalItems'] ?? 0);
+check('collection type', 'OrderedCollection', $collection['type'] ?? null);
+check('collection first page', true, str_ends_with((string) ($collection['first'] ?? ''), '?page=true'));
+check('collection last page', true, str_contains((string) ($collection['last'] ?? ''), 'max_id='));
+check('total matches database', count(db($db_path, 'SELECT * FROM Post')), $total);
+
+$url   = $collection['first'];
+$items = 0;
+$pages = 0;
+$seen  = [];
+while ($url !== null && $pages < 20) {
+    $page = json_body(expect('outbox page ' . ($pages + 1), 200, http('GET', $url)));
+    check('page type', 'OrderedCollectionPage', $page['type'] ?? null);
+    check('page partOf', "{$instance}/ap/outbox", $page['partOf'] ?? null);
+    foreach ($page['orderedItems'] ?? [] as $item) {
+        $seen[$item['object']['id'] ?? $item['id'] ?? ''] = true;
+    }
+    $items += count($page['orderedItems'] ?? []);
+    $url    = $page['next'] ?? null;
+    $pages++;
+}
+check('pages cover every post', $total, $items);
+check('no duplicate posts', $total, count($seen));
+check('page size respected', (int) ceil($total / 2), $pages);
+
 // ── panel ─────────────────────────────────────────────────────────────────────
 
 section('Panel');
@@ -340,6 +375,73 @@ check('Undo delivered', true, str_contains((string) file_get_contents($rlog), '"
 
 expect('unfollow unknown uri rejected', 400, post("{$instance}/ap/action", ['user' => 'https://evil.example/u/x', 'action' => 'Unfollow', 'password' => 'testpass']));
 
+section('Blocks');
+
+$follow2 = $follow;
+$follow2['id'] = "{$actorU}#follows/2";
+$hostport = parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT);
+
+expect('follower before block', 202, sign_post($inbox, $follow2, $key, $keyId));
+check('follower stored again', 1, count(db($db_path, 'SELECT * FROM Follower')));
+
+expect('block actor', 200, post("{$instance}/ap/action", ['user' => $actorU, 'action' => 'Block', 'password' => 'testpass']));
+check('block stored', 1, count(db($db_path, 'SELECT * FROM Block')));
+check('blocking drops the follower', 0, count(db($db_path, 'SELECT * FROM Follower')));
+check('Block activity delivered', true, str_contains((string) file_get_contents($rlog), '"type":"Block"'));
+
+$r = expect('people lists blocked', 200, http('GET', "{$instance}/ap/people",
+    json_encode(['password' => 'testpass']), ['Content-Type: application/json']));
+check('blocked handle', '@bob@' . $hostport, json_body($r)['blocked'][0]['handle'] ?? null);
+
+// Dropped before signature verification: no fetch, no write.
+expect('blocked actor ignored', 202, http('POST', $inbox, json_encode($follow2), ['Content-Type: application/activity+json']));
+check('blocked actor cannot follow', 0, count(db($db_path, 'SELECT * FROM Follower')));
+
+expect('unblock actor', 200, post("{$instance}/ap/action", ['user' => $actorU, 'action' => 'Unblock', 'password' => 'testpass']));
+check('block removed', 0, count(db($db_path, 'SELECT * FROM Block')));
+check('Undo(Block) delivered', true, str_contains((string) file_get_contents($rlog), '"object":{"type":"Block"'));
+
+section('Account deletion');
+
+$follow3 = $follow;
+$follow3['id'] = "{$actorU}#follows/3";
+expect('follower before delete', 202, sign_post($inbox, $follow3, $key, $keyId));
+check('follower stored before delete', 1, count(db($db_path, 'SELECT * FROM Follower')));
+
+expect('signed Delete', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#deletes/1",
+    'type'     => 'Delete',
+    'actor'    => $actorU,
+    'object'   => $actorU,
+], $key, $keyId));
+check('deleted account dropped as follower', 0, count(db($db_path, 'SELECT * FROM Follower')));
+
+section('Delivery retries');
+
+$fail_flag = $rlog . '.fail';
+file_put_contents($fail_flag, '1');
+db($db_path, "INSERT INTO Follower (actor_uri, inbox, data) VALUES (?, ?, '{}')", ["{$actorU}#retry", "{$remote}/inbox"]);
+
+expect('post while follower fails', 200, post("{$instance}/ap/post", ['content' => 'retry-marker', 'password' => 'testpass']));
+$queue = db($db_path, 'SELECT * FROM Delivery');
+check('delivery left in queue', 1, count($queue));
+check('attempt recorded', true, (int) ($queue[0]['attempts'] ?? 0) >= 1);
+check('failed delivery not marked sent', false, str_contains((string) file_get_contents($rlog), 'retry-marker'));
+
+unlink($fail_flag);
+db($db_path, "UPDATE Delivery SET next_try = datetime('now', '-1 minute')");
+
+$worker = dirname(dirname($db_path)) . '/scripts/ops/deliver.php';
+$out    = [];
+$code   = 0;
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($worker) . ' 2>&1', $out, $code);
+check('worker exits cleanly', 0, $code);
+check('worker reports a delivery', true, str_contains(implode("\n", $out), 'delivered=1'));
+check('queue drained', 0, count(db($db_path, 'SELECT * FROM Delivery')));
+check('retry reached the inbox', true, str_contains((string) file_get_contents($rlog), 'retry-marker'));
+db($db_path, 'DELETE FROM Follower WHERE actor_uri = ?', ["{$actorU}#retry"]);
+
 // ── subdirectory deployment ───────────────────────────────────────────────────
 
 section('Subdirectory deployment (/sufi prefix)');
@@ -368,6 +470,13 @@ $csrf = token($r[2]);
 $r = expect('prefixed post', 200, post("{$prefix}/sufi/ap/post", ['content' => 'prefixed', 'csrf_token' => $csrf], $jar));
 check('prefixed post id', true, str_starts_with((string) (json_body($r)['object']['id'] ?? ''), "{$prefix}/sufi/ap/post/"));
 check('prefixed post stored', 1, count(db($pdb_path, 'SELECT * FROM Post')));
+
+// This instance refuses plain-http/private fetches, so the remote key cannot be
+// loaded and the activity must be rejected.
+$prefix_root = dirname(dirname($pdb_path));
+expect('private actor rejected', 401, sign_post("{$prefix}/sufi/ap/inbox", $follow, $key, $keyId));
+check('blocked fetch logged', true,
+    str_contains((string) @file_get_contents($prefix_root . '/sys/logs/security.log'), 'Fetch.Blocked'));
 
 // Rotating sys/private.pem must update the served public key by itself.
 $new_res = openssl_pkey_new(['private_key_bits' => 2048]);

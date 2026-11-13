@@ -3,6 +3,7 @@ namespace SUFI;
 
 require __DIR__ . "/sys/config.php";
 require __DIR__ . "/sys/database.php";
+require __DIR__ . "/sys/delivery.php";
 require __DIR__ . "/templates/actor.php";
 require __DIR__ . "/templates/webfinger.php";
 
@@ -11,6 +12,8 @@ require __DIR__ . "/templates/webfinger.php";
 $base_path     = rtrim((string) ($base_path ?? ''), '/');
 $base_url      = $base_url ?? "https://{$server}/";
 $cookie_secure = $cookie_secure ?? (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+$allow_private_fetch = $allow_private_fetch ?? false;
+$outbox_page_size    = (int) ($outbox_page_size ?? 20);
 
 if (!file_exists(__DIR__ . '/sys/private.pem')) {
     http_response_code(500);
@@ -189,6 +192,17 @@ switch ($request) {
 function inbox() {
     global $body, $db_handler, $base_url;
 
+    $type      = $body["type"]  ?? null;
+    $actor_uri = $body["actor"] ?? null;
+
+    // Blocked actors are dropped before signature verification: no network
+    // fetch, no database write, nothing to exploit.
+    if (is_string($actor_uri) && $actor_uri !== ''
+        && System\Database\get_block($db_handler, $actor_uri)) {
+        http_response_code(202);
+        die();
+    }
+
     // Every activity — Follow, Undo, Create, Like, anything — must be signed by
     // the actor that claims to have sent it. Verify before touching the database:
     // an unauthenticated inbox is a spam and impersonation vector.
@@ -197,11 +211,25 @@ function inbox() {
         die();
     }
 
-    $type      = $body["type"]  ?? null;
-    $actor_uri = $body["actor"] ?? null;
-
     if (!is_string($type) || $type === '' || !is_string($actor_uri) || $actor_uri === '') {
         http_response_code(400);
+        die();
+    }
+
+    // Account or object deletions: stop delivering to actors that no longer exist.
+    if ($type === "Delete") {
+        $object     = $body["object"] ?? null;
+        $object_uri = is_array($object) ? ($object["id"] ?? null) : (is_string($object) ? $object : null);
+
+        if (is_string($object_uri) && $object_uri !== '') {
+            if ($object_uri === $actor_uri) {
+                System\Database\remove_follower($db_handler, $actor_uri);
+                System\Database\remove_following($db_handler, $actor_uri);
+            }
+            System\Database\remove_likes_for_object($db_handler, $object_uri);
+        }
+
+        http_response_code(202);
         die();
     }
 
@@ -299,6 +327,7 @@ function people() {
     echo json_encode([
         'followers' => people_list(System\Database\get_followers($db_handler)),
         'following' => people_list(System\Database\get_following($db_handler)),
+        'blocked'   => people_list(System\Database\get_blocks($db_handler)),
     ]);
 }
 
@@ -521,17 +550,21 @@ function action_users() {
     }
 
     if (preg_match('#^https?://#i', $user)) {
-        // Unfollowing/blocking by actor URI. Only actors we already follow are
+        // Panel actions by actor URI. Only actors we already know about are
         // accepted, so the panel cannot be used to send signed activities to
         // arbitrary inboxes.
-        $row = System\Database\get_following_actor($db_handler, $user);
-        if (!$row) {
+        $known = System\Database\get_following_actor($db_handler, $user)
+            ?? System\Database\get_follower($db_handler, $user)
+            ?? System\Database\get_block($db_handler, $user);
+
+        if (!$known || $action === "Follow" || empty($known["inbox"])) {
             http_response_code(400);
-            echo "Not following that actor";
+            echo "Unknown actor";
             return;
         }
-        $profileUrl   = $user;
-        $profileInbox = $row["inbox"];
+        $profileUrl    = $user;
+        $profileInbox  = $known["inbox"];
+        $profile_data  = json_decode($known["data"] ?? '{}', true) ?: [];
     } else {
         $details      = getUserDetails($user);
         $profileInbox = $details["inbox"] ?? null;
@@ -587,8 +620,14 @@ function action_users() {
     if ($action === "Follow") {
         $profile_data = getDataFromURl($profileUrl);
         System\Database\add_following($db_handler, $profileUrl, $profileInbox, $profile_data ?? []);
-    } elseif ($action === "Unfollow" || $action === "Block") {
+    } elseif ($action === "Unfollow") {
         System\Database\remove_following($db_handler, $profileUrl);
+    } elseif ($action === "Block") {
+        System\Database\add_block($db_handler, $profileUrl, $profileInbox, $profile_data ?? []);
+        System\Database\remove_following($db_handler, $profileUrl);
+        System\Database\remove_follower($db_handler, $profileUrl);
+    } elseif ($action === "Unblock") {
+        System\Database\remove_block($db_handler, $profileUrl);
     }
 
     echo htmlspecialchars("{$action} sent to {$user}");
@@ -643,132 +682,6 @@ function undo($message) {
             System\Database\remove_like($db_handler, $liked, $actor);
         }
     }
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// HTTP signing and sending
-// ════════════════════════════════════════════════════════════════════════════════
-
-function generate_signed_headers($message, $host, $path, $method) {
-    global $base_url, $key_private;
-
-    $keyId  = "{$base_url}ap/actor#main-key";
-    $signer = openssl_get_privatekey($key_private);
-    $date   = date("D, d M Y H:i:s \G\M\T");
-
-    if ($method === "POST") {
-        $message_json = json_encode($message);
-        $digest       = base64_encode(hash("sha256", $message_json, true));
-        $stringToSign = "(request-target): post {$path}\nhost: {$host}\ndate: {$date}\ndigest: SHA-256={$digest}";
-
-        openssl_sign($stringToSign, $signature, $signer, OPENSSL_ALGO_SHA256);
-        $sig_b64 = base64_encode($signature);
-        $sig_hdr = "keyId=\"{$keyId}\",algorithm=\"rsa-sha256\",headers=\"(request-target) host date digest\",signature=\"{$sig_b64}\"";
-
-        return [
-            "Host: {$host}",
-            "Date: {$date}",
-            "Digest: SHA-256={$digest}",
-            "Signature: {$sig_hdr}",
-            "Content-Type: application/activity+json",
-            "Accept: application/activity+json",
-            "User-Agent: SUFI (+{$base_url})",
-        ];
-    }
-
-    $stringToSign = "(request-target): get {$path}\nhost: {$host}\ndate: {$date}";
-    openssl_sign($stringToSign, $signature, $signer, OPENSSL_ALGO_SHA256);
-    $sig_b64 = base64_encode($signature);
-    $sig_hdr = "keyId=\"{$keyId}\",algorithm=\"rsa-sha256\",headers=\"(request-target) host date\",signature=\"{$sig_b64}\"";
-
-    return [
-        "Host: {$host}",
-        "Date: {$date}",
-        "Signature: {$sig_hdr}",
-        "Accept: application/activity+json, application/json",
-        "User-Agent: SUFI (+{$base_url})",
-    ];
-}
-
-function sendMessageToSingle($inbox, $message) {
-    $parsed = parse_url($inbox);
-    if (empty($parsed['host'])) { return; }
-
-    $host    = $parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : '');
-    $path    = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
-    $headers = generate_signed_headers($message, $host, $path, 'POST');
-    $json    = json_encode($message);
-
-    $ctx = stream_context_create(['http' => [
-        'method'         => 'POST',
-        'header'         => implode("\r\n", $headers),
-        'content'        => $json,
-        'ignore_errors'  => true,
-        'timeout'        => 10,
-    ]]);
-    $response = @file_get_contents($inbox, false, $ctx);
-
-    $status = $http_response_header[0] ?? '';
-    if ($response === false) {
-        save_log('Delivery.Fail', "inbox: {$inbox}");
-    } elseif (!preg_match('#^HTTP/\S+\s+2\d\d#', $status)) {
-        save_log('Delivery.Reject', "inbox: {$inbox} status: {$status}");
-    }
-}
-
-function sendToFollowers($message) {
-    global $db_handler;
-    foreach (System\Database\get_followers($db_handler) as $follower) {
-        sendMessageToSingle($follower['inbox'], $message);
-    }
-}
-
-function getDataFromURl($url) {
-    static $cache = [];
-    if (array_key_exists($url, $cache)) { return $cache[$url]; }
-
-    $fetch   = strtok($url, '#');
-    $parsed  = parse_url($fetch);
-    if (empty($parsed['host'])) { return $cache[$url] = null; }
-
-    $host    = $parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : '');
-    $path    = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
-    $headers = generate_signed_headers(null, $host, $path, 'GET');
-
-    $ctx = stream_context_create(['http' => [
-        'method'        => 'GET',
-        'header'        => implode("\r\n", $headers),
-        'ignore_errors' => true,
-        'timeout'       => 10,
-    ]]);
-    $response = @file_get_contents($fetch, false, $ctx);
-    return $cache[$url] = ($response ? json_decode($response, true) : null);
-}
-
-function getUserDetails($handle) {
-    $parts = explode("@", ltrim((string) $handle, "@"));
-    if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
-        return ["profile" => null, "inbox" => null];
-    }
-    [$follow_name, $follow_server] = $parts;
-
-    $webfinger_url = "https://{$follow_server}/.well-known/webfinger?resource=acct:{$follow_name}@{$follow_server}";
-    $webfinger     = getDataFromURl($webfinger_url);
-
-    $profile_url   = null;
-    $profile_inbox = null;
-    foreach ($webfinger["links"] ?? [] as $link) {
-        if ($link["rel"] === "self") { $profile_url = $link["href"]; }
-        if ($link["rel"] === "inbox") { $profile_inbox = $link["href"]; }
-        if ($link["rel"] === "sharedInbox") { $profile_inbox = $link["href"]; }
-    }
-
-    if (!$profile_inbox && $profile_url) {
-        $profile = getDataFromURl($profile_url);
-        $profile_inbox = $profile["endpoints"]["sharedInbox"] ?? $profile["inbox"] ?? null;
-    }
-
-    return ["profile" => $profile_url, "inbox" => $profile_inbox];
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -977,9 +890,3 @@ function meta() {
     die();
 }
 
-function save_log($filename, $message) {
-    global $directories;
-    $ts   = date('Y-m-d_His');
-    $path = $directories['logs'] . "/{$ts}_{$filename}.txt";
-    @file_put_contents($path, $message);
-}

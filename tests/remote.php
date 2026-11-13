@@ -33,6 +33,11 @@ if ($uri === '/u/bob') {
 }
 
 if ($uri === '/inbox' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+    if (is_file($log_path . '.fail')) {
+        http_response_code(500);
+        echo '{"error":"temporarily unavailable"}';
+        exit;
+    }
     file_put_contents($log_path, file_get_contents('php://input') . "\n", FILE_APPEND | LOCK_EX);
     http_response_code(202);
     exit;

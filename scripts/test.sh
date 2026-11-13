@@ -35,9 +35,9 @@ say 'php lint'
 find "$root" -name '*.php' -print0 | xargs -0 -n1 "$php" -l > /dev/null
 echo '  ok'
 
-# make_instance <dir> <base_path> <port>
+# make_instance <dir> <base_path> <port> <allow_private_fetch>
 make_instance() {
-    local dir="$1" base="$2" inst_port="$3"
+    local dir="$1" base="$2" inst_port="$3" allow_private="$4"
 
     mkdir -p "$dir"
     tar -C "$root" \
@@ -57,12 +57,14 @@ make_instance() {
 \$cookie_secure = false;
 \$base_url      = 'http://127.0.0.1:$inst_port$base/';
 \$actor_name    = 'Alice';
+\$allow_private_fetch = $allow_private;
+\$outbox_page_size = 2;
 PHP
 }
 
 say 'building sandbox'
-make_instance "$sandbox/root" '' "$port"
-make_instance "$sandbox/prefix" '/sufi' "$port_prefix"
+make_instance "$sandbox/root" '' "$port" true
+make_instance "$sandbox/prefix" '/sufi' "$port_prefix" false
 openssl genrsa -out "$sandbox/remote.pem" 2048 2>/dev/null
 export SUFI_REMOTE_KEY="$sandbox/remote.pem"
 export SUFI_REMOTE_LOG="$sandbox/remote-inbox.log"

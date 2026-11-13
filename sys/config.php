@@ -26,6 +26,13 @@ $base_path = '';
 $base_path = rtrim($base_path, '/');
 $base_url  = 'https://' . $server . $base_path . '/';
 
+// Fetching remote actors is restricted to https + public IPs. Only turn this on
+// for local development or the test suite (http://127.0.0.1).
+$allow_private_fetch = false;
+
+// Posts per page in /ap/outbox.
+$outbox_page_size = 20;
+
 // RSA private key — generate with:
 //   openssl genrsa -out sys/private.pem 2048
 // Then extract public key:

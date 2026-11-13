@@ -46,18 +46,31 @@ Remote server looks you up:
   → full actor JSON with public key
 ```
 
+### Delivery queue
+
+Outgoing activities (posts, Accepts, Blocks, Undos) are written to a `Delivery`
+table and sent *after* the response is flushed, so a slow follower never delays
+your request. Failures are retried with backoff (1m, 5m, 15m, 1h, then every 6h)
+by `scripts/ops/deliver.php`, which should run every minute from cron — the
+deploy script installs that entry. After 10 failed attempts the activity is
+dropped and written to `sys/logs/security.log`.
+
 ### File structure
 
 ```
 index.php          router + all ActivityPub logic (one file)
 sys/
   config.php       your instance config — edit this
-  database.php     SQLite CRUD helpers
+  database.php     SQLite CRUD helpers + delivery/block tables
+  delivery.php     signed requests, fetch guards, delivery queue
   sufi.sql         schema (auto-applied on first connection)
   sufi.sqlite      the database (created automatically)
   private.pem      RSA private key  ← keep secret, never commit
   public.pem       RSA public key
-  logs/            debug logs from incoming requests
+  logs/            security.log (rotated at 1MB)
+  cache/           short-lived cache of remote actor documents
+scripts/
+  ops/deliver.php  delivery worker, run from cron every minute
 templates/
   actor.php        builds Actor JSON
   webfinger.php    builds WebFinger JSON
@@ -83,6 +96,8 @@ deploy/
 | `Following` | Everyone you follow |
 | `Post` | Your notes/posts |
 | `Like` | Objects you have liked |
+| `Block` | Actors you blocked (enforced in the inbox) |
+| `Delivery` | Queued outgoing activities and retry state |
 
 ---
 
@@ -151,6 +166,13 @@ $base_path = '';
 `$base_path` is not about where the files sit on disk. In the recommended
 setup the files live in `/var/www/html/sufi/` but the activity URLs are still
 `https://example.com/ap/actor`, so `$base_path` stays empty.
+
+Two more settings have safe defaults and rarely need touching:
+
+```php
+$allow_private_fetch = false;  // keep false: only https + public IPs are fetched
+$outbox_page_size    = 20;     // posts per /ap/outbox page
+```
 
 ### 5. Initialize the database
 
@@ -298,6 +320,11 @@ password=your-secret&user=@bob@mastodon.social&action=Follow
 
 `action` values: `Follow` `Unfollow` `Block` `Unblock`
 
+Blocking is real: the actor is stored in the `Block` table, removed from your
+followers/following, and anything they send afterwards is discarded before
+signature verification (no fetch, no write). `user` may be a handle or an actor
+URI — the panel uses URIs so it never has to re-run webfinger.
+
 ```bash
 curl -X POST https://example.com/ap/action \
   -d "password=your-secret" \
@@ -381,7 +408,7 @@ These are called automatically by other fediverse servers. You don't call them d
 | `GET` | `/.well-known/host-meta` | Discovery: XML pointer to WebFinger |
 | `GET` | `/ap/actor` | Your ActivityPub profile + public key |
 | `POST` | `/ap/inbox` | Receives Follow, Undo, and other activities |
-| `GET` | `/ap/outbox` | Your posts as an ordered collection |
+| `GET` | `/ap/outbox` | Paginated `OrderedCollection`; pages via `?page=true&max_id=` |
 | `GET` | `/ap/followers` | List of actor URIs following you |
 | `GET` | `/ap/following` | List of actor URIs you follow |
 | `GET` | `/ap/likes` | Objects you have liked |
@@ -448,6 +475,9 @@ rm sys/sufi.sqlite
 - Every activity posted to the inbox is signature-checked before it is stored or acted on: unsigned, tampered, or wrong-key deliveries get HTTP 401
 - Incoming `Create` and `Announce` activities are stored as inbox items, `Like`s also land in the likes collection, `Follow`/`Undo` update followers. Everything else is accepted and ignored — SUFI is a publishing server, not a reader
 - The panel logs in by posting back to `/sufi/` itself, so it works without extra rewrite rules for `/sufi/login` or `/sufi/logout`
+- Remote fetches are limited to HTTPS and public IPs, with a 4s timeout, no redirects, and a short-lived cache — the inbox is public, so this matters
+- Failed signature checks and delivery failures append to a single rotated `sys/logs/security.log`, never one file per request
+- Blocked actors are dropped before signature verification
 
 ---
 

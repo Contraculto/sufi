@@ -5,6 +5,8 @@ function connect_database() {
     try {
         $DBH = new \PDO("sqlite:" . __DIR__ . "/sufi.sqlite");
         $DBH->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        $DBH->exec('PRAGMA journal_mode = WAL');
+        $DBH->exec('PRAGMA busy_timeout = 5000');
         init_schema($DBH);
         return $DBH;
     } catch (\PDOException $e) {
@@ -133,6 +135,24 @@ function get_posts($DBH) {
     return get($DBH, "SELECT * FROM Post ORDER BY published DESC");
 }
 
+function count_posts($DBH) {
+    return (int) $DBH->query("SELECT COUNT(*) FROM Post")->fetchColumn();
+}
+
+function oldest_post_id($DBH) {
+    return (int) $DBH->query("SELECT COALESCE(MIN(id), 0) FROM Post")->fetchColumn();
+}
+
+function get_posts_page($DBH, $limit, $max_id = null) {
+    if ($max_id === null) {
+        return get($DBH, "SELECT * FROM Post ORDER BY id DESC LIMIT ?", [(int) $limit]);
+    }
+    return get($DBH,
+        "SELECT * FROM Post WHERE id <= ? ORDER BY id DESC LIMIT ?",
+        [(int) $max_id, (int) $limit]
+    );
+}
+
 function get_post($DBH, $guid) {
     $rows = get($DBH, "SELECT * FROM Post WHERE guid = ? LIMIT 1", [$guid]);
     return $rows[0] ?? null;
@@ -143,6 +163,60 @@ function add_post($DBH, $guid, $type, $content, $published, $in_reply, $data) {
         "INSERT INTO Post (guid, type, content, published, in_reply, data) VALUES (?, ?, ?, ?, ?, ?)",
         [$guid, $type, $content, $published, $in_reply, json_encode($data)]
     );
+}
+
+// ── Blocks ────────────────────────────────────────────────────────────────────
+
+function get_blocks($DBH) {
+    return get($DBH, "SELECT * FROM Block ORDER BY created_at DESC");
+}
+
+function get_block($DBH, $actor_uri) {
+    $rows = get($DBH, "SELECT * FROM Block WHERE actor_uri = ? LIMIT 1", [$actor_uri]);
+    return $rows[0] ?? null;
+}
+
+function add_block($DBH, $actor_uri, $inbox, $data) {
+    run($DBH,
+        "INSERT OR REPLACE INTO Block (actor_uri, inbox, data) VALUES (?, ?, ?)",
+        [$actor_uri, $inbox, is_string($data) ? $data : json_encode($data)]
+    );
+}
+
+function remove_block($DBH, $actor_uri) {
+    run($DBH, "DELETE FROM Block WHERE actor_uri = ?", [$actor_uri]);
+}
+
+// ── Delivery queue ────────────────────────────────────────────────────────────
+
+function enqueue_delivery($DBH, $inbox, $data) {
+    run($DBH,
+        "INSERT INTO Delivery (inbox, payload) VALUES (?, ?)",
+        [$inbox, json_encode($data)]
+    );
+    return (int) $DBH->lastInsertId();
+}
+
+function claim_deliveries($DBH, $limit = 25) {
+    return get($DBH,
+        "SELECT * FROM Delivery WHERE next_try <= datetime('now') ORDER BY id LIMIT ?",
+        [(int) $limit]
+    );
+}
+
+function retry_delivery($DBH, $id, $attempts, $next_try) {
+    run($DBH,
+        "UPDATE Delivery SET attempts = ?, next_try = ? WHERE id = ?",
+        [$attempts, $next_try, $id]
+    );
+}
+
+function delete_delivery($DBH, $id) {
+    run($DBH, "DELETE FROM Delivery WHERE id = ?", [$id]);
+}
+
+function count_deliveries($DBH) {
+    return (int) $DBH->query("SELECT COUNT(*) FROM Delivery")->fetchColumn();
 }
 
 // ── Likes ─────────────────────────────────────────────────────────────────────
@@ -163,6 +237,10 @@ function remove_like($DBH, $object_uri, $actor_uri) {
         "DELETE FROM Like WHERE object_uri = ? AND actor_uri = ?",
         [$object_uri, $actor_uri]
     );
+}
+
+function remove_likes_for_object($DBH, $object_uri) {
+    run($DBH, "DELETE FROM Like WHERE object_uri = ?", [$object_uri]);
 }
 
 // ── Posts (extended) ──────────────────────────────────────────────────────────

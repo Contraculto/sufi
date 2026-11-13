@@ -3,6 +3,7 @@ sys/private.pem
 sys/public.pem
 sys/sufi.sqlite
 sys/logs/
+sys/cache/
 
 # Environment
 .env

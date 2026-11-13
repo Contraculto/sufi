@@ -313,16 +313,15 @@ async function loadPeople() {
             <button class="primary" onclick="followUser()">Follow</button>
         </div>`;
 
-    const renderList = (items, withUnfollow) => {
+    const renderList = (items, actions) => {
         if (!items.length) return '<div class="empty">none</div>';
         return items.map(p => {
             const name = p.name ? `<span class="pname">${esc(p.name)}</span>` : '';
-            const btn = withUnfollow
-                ? `<button class="ghost" data-unfollow="${esc(p.uri)}">unfollow</button>`
-                : '';
+            const btns = (actions || []).map(([label, attr, cls]) =>
+                `<button class="${cls}" data-${attr}="${esc(p.uri)}">${label}</button>`).join('');
             return `<div class="person">
                 <span><a href="${esc(p.url)}" target="_blank">${esc(p.handle)}</a>${name}</span>
-                ${btn}
+                <span>${btns}</span>
             </div>`;
         }).join('');
     };
@@ -330,14 +329,19 @@ async function loadPeople() {
     panel.innerHTML = `
         ${followInput}
         <div class="section-label">following (${people.following.length})</div>
-        ${renderList(people.following, true)}
+        ${renderList(people.following, [['unfollow', 'unfollow', 'ghost'], ['block', 'block', 'danger']])}
         <div class="section-label">followers (${people.followers.length})</div>
-        ${renderList(people.followers, false)}
+        ${renderList(people.followers, [['block', 'block', 'danger']])}
+        <div class="section-label">blocked (${people.blocked.length})</div>
+        ${renderList(people.blocked, [['unblock', 'unblock', 'ghost']])}
     `;
 
     // URIs live in data attributes, not inline JS, so remote values cannot break out.
-    panel.querySelectorAll('[data-unfollow]').forEach(btn =>
-        btn.addEventListener('click', () => unfollowUser(btn.dataset.unfollow)));
+    const wire = (attr, fn) => panel.querySelectorAll(`[data-${attr}]`).forEach(btn =>
+        btn.addEventListener('click', () => fn(btn.dataset[attr])));
+    wire('unfollow', unfollowUser);
+    wire('block', blockUser);
+    wire('unblock', unblockUser);
 }
 
 async function followUser() {
@@ -351,6 +355,21 @@ async function followUser() {
 
 async function unfollowUser(uri) {
     const r = await api('/ap/action', { user: uri, action: 'Unfollow' });
+    const msg = await r.text();
+    setStatus(msg, r.ok);
+    if (r.ok) loadPeople();
+}
+
+async function blockUser(uri) {
+    if (!confirm('block this actor? Their posts stop arriving and they are removed from your followers.')) return;
+    const r = await api('/ap/action', { user: uri, action: 'Block' });
+    const msg = await r.text();
+    setStatus(msg, r.ok);
+    if (r.ok) loadPeople();
+}
+
+async function unblockUser(uri) {
+    const r = await api('/ap/action', { user: uri, action: 'Unblock' });
     const msg = await r.text();
     setStatus(msg, r.ok);
     if (r.ok) loadPeople();

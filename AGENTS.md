@@ -38,10 +38,12 @@ php -S 127.0.0.1:8080
 ```
 sufi/
 ├── index.php               # Entry point / router
-├── sys/                    # Keys, SQLite DB, logs
+├── sys/                    # Keys, SQLite DB, logs, delivery queue
+│   └── delivery.php        # signing, fetch guards, delivery worker core
 ├── templates/              # HTML templates (ActivityPub JSON + panel)
 ├── deploy/                 # Web server configuration examples
 ├── scripts/test.sh         # Test runner (lint + sandbox + suite)
+├── scripts/ops/deliver.php # Delivery worker (cron, every minute)
 ├── tests/                  # tests/run.php + fake remote server fixture
 └── .htaccess               # Apache rewrite rules
 ```
@@ -59,6 +61,8 @@ sufi/
 | Rotate keys | Replace `sys/private.pem`; the Actor row syncs on next request |
 | Actor creation | `ensure_actor()` in `sys/database.php` (runs on bootstrap) |
 | Add or fix a test | `tests/run.php` (assertions), `scripts/test.sh` (setup) |
+| Outbound delivery / retries | `sys/delivery.php` + `scripts/ops/deliver.php` |
+| Blocking or moderation | `inbox()` + `action_users()` in `index.php`, `Block` table |
 
 ---
 
@@ -95,4 +99,5 @@ See `deploy/` for Apache and Nginx configuration examples.
 3. **ActivityPub is strict about Content-Type.** All JSON-LD responses must use `application/activity+json`.
 4. **HTTP Signatures are mandatory.** Every activity posted to the inbox is verified *before* it is stored or acted on — do not move `verifyHTTPSignature()` below database writes. Every outgoing activity must be signed.
 5. **No Composer autoloading.** This project is dependency-free. Include files manually if needed.
-6. **Run `./scripts/test.sh` before touching production.** It covers discovery, posting, panel auth, inbox signature rejection and delivery. Not shipping untested federation changes matters more here than in a normal app: a broken signature check can silently defederate you.
+6. **Never enable `$allow_private_fetch` in production.** It disables the HTTPS/private-IP guards on outbound fetches and exists only for local tests.
+7. **Run `./scripts/test.sh` before touching production.** It covers discovery, posting, panel auth, inbox signature rejection and delivery. Not shipping untested federation changes matters more here than in a normal app: a broken signature check can silently defederate you.
