@@ -2,8 +2,8 @@
 namespace SUFI\Templates;
 
 function actor($user_data) {
-    global $server, $username;
-    $base = "https://{$server}/";
+    global $base_url, $username;
+    $base = $base_url;
 
     $data = [
         "@context" => [

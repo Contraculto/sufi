@@ -7,6 +7,11 @@ require __DIR__ . "/templates/actor.php";
 require __DIR__ . "/templates/webfinger.php";
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
+// Defaults for config.php files written before these settings existed.
+$base_path     = rtrim((string) ($base_path ?? ''), '/');
+$base_url      = $base_url ?? "https://{$server}/";
+$cookie_secure = $cookie_secure ?? (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+
 if (!file_exists(__DIR__ . '/sys/private.pem')) {
     http_response_code(500);
     die('Missing RSA private key. Generate it with: openssl genrsa -out sys/private.pem 2048');
@@ -15,7 +20,11 @@ if (!file_exists(__DIR__ . '/sys/private.pem')) {
 $db_handler = System\Database\connect_database();
 $user_data  = System\Database\get_user_data($db_handler);
 
-session_set_cookie_params(['httponly' => true, 'secure' => true, 'samesite' => 'Strict']);
+session_set_cookie_params([
+    'httponly' => true,
+    'secure'   => $cookie_secure,
+    'samesite' => 'Strict',
+]);
 session_start();
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
@@ -24,10 +33,15 @@ if (empty($_SESSION['csrf_token'])) {
 // ── Router ────────────────────────────────────────────────────────────────────
 $request = strtok($_SERVER["REQUEST_URI"], '?');
 
-// Strip subdirectory prefix when SUFI is deployed inside an existing site
-if ($base_path && str_starts_with($request, $base_path)) {
+// Strip subdirectory prefix when SUFI is deployed inside an existing site.
+// The boundary check matters: with $base_path = '/sufi', a request for
+// '/sufi2/ap/actor' must not be treated as SUFI.
+if ($base_path !== '' && ($request === $base_path || str_starts_with($request, $base_path . '/'))) {
     $request = substr($request, strlen($base_path)) ?: '/';
 }
+
+// Canonical panel URL, always with a trailing slash, e.g. https://host/sufi/
+$panel_url = $base_url . 'sufi/';
 
 // Normalize webfinger — the query string was already removed
 if (str_contains($request, "well-known/webfinger")) {
@@ -99,22 +113,40 @@ switch ($request) {
         break;
 
     case "/sufi":
+        // Canonical slash so the panel's relative links resolve correctly.
+        header('Location: ' . $panel_url);
+        die();
+
     case "/sufi/":
         if (!$panel_enabled) { http_response_code(404); echo "Not found"; break; }
+
+        // Panel actions post back to this same URL, so no extra web-server
+        // rewrite rules are needed for login or logout.
+        if (isset($_GET['logout'])) {
+            $_SESSION = [];
+            if (ini_get('session.use_cookies')) {
+                $params = session_get_cookie_params();
+                setcookie(session_name(), '', time() - 42000, $params['path'],
+                    $params['domain'], $params['secure'], $params['httponly']);
+            }
+            session_destroy();
+            header('Location: ' . $panel_url);
+            die();
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
+            if (hash_equals($password, (string) $_POST['password'])) {
+                session_regenerate_id(true);
+                $_SESSION['auth'] = true;
+                header('Location: ' . $panel_url);
+            } else {
+                header('Location: ' . $panel_url . '?error=1');
+            }
+            die();
+        }
+
         require __DIR__ . "/templates/panel.php";
         break;
-
-    case "/sufi/login":
-        if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['password'] ?? '') === $password) {
-            $_SESSION['auth'] = true;
-        }
-        header('Location: /sufi/');
-        die();
-
-    case "/sufi/logout":
-        session_destroy();
-        header('Location: /sufi/');
-        die();
 
     default:
         if ($request === "/@{$username}" || $request === "/{$username}" || $request === "/") {
@@ -141,33 +173,39 @@ switch ($request) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function inbox() {
-    global $body, $server, $db_handler;
+    global $body, $db_handler, $base_url;
 
-    $type = $body["type"] ?? null;
-
-    // Store incoming interactions
-    if (in_array($type, ["Create", "Announce", "Like"])) {
-        $obj     = $body["object"] ?? null;
-        $obj_uri = is_array($obj) ? ($obj["id"] ?? null) : (is_string($obj) ? $obj : null);
-        System\Database\add_inbox_item($db_handler, $type, $body["actor"] ?? "", $obj_uri, $body);
-        http_response_code(202);
+    // Every activity — Follow, Undo, Create, Like, anything — must be signed by
+    // the actor that claims to have sent it. Verify before touching the database:
+    // an unauthenticated inbox is a spam and impersonation vector.
+    if (!verifyHTTPSignature()) {
+        http_response_code(401);
         die();
     }
 
-    // Silently accept and ignore the rest
-    if (in_array($type, ["Add", "Remove", "Reject", "Update", "Delete", "Move"])) {
+    $type      = $body["type"]  ?? null;
+    $actor_uri = $body["actor"] ?? null;
+
+    if (!is_string($type) || $type === '' || !is_string($actor_uri) || $actor_uri === '') {
+        http_response_code(400);
+        die();
+    }
+
+    // Store incoming interactions (all verified at this point)
+    if (in_array($type, ["Create", "Announce", "Like"], true)) {
+        $obj     = $body["object"] ?? null;
+        $obj_uri = is_array($obj) ? ($obj["id"] ?? null) : (is_string($obj) ? $obj : null);
+
+        if ($type === "Like" && is_string($obj_uri) && $obj_uri !== '') {
+            System\Database\add_like($db_handler, $obj_uri, $actor_uri);
+        }
+        System\Database\add_inbox_item($db_handler, $type, $actor_uri, $obj_uri, $body);
         http_response_code(202);
         die();
     }
 
     if ($type === "Follow") {
-        if (!verifyHTTPSignature()) {
-            http_response_code(401);
-            die();
-        }
-
-        $follower_actor = $body["actor"];
-        $actor_data     = getDataFromURl($follower_actor);
+        $actor_data     = getDataFromURl($actor_uri);
         $follower_inbox = $actor_data["endpoints"]["sharedInbox"]
                        ?? $actor_data["inbox"]
                        ?? null;
@@ -177,36 +215,31 @@ function inbox() {
             die();
         }
 
-        System\Database\add_follower($db_handler, $follower_actor, $follower_inbox, $actor_data ?? []);
+        System\Database\add_follower($db_handler, $actor_uri, $follower_inbox, $actor_data ?? []);
 
         $guid    = uuid();
         $message = [
             "@context" => "https://www.w3.org/ns/activitystreams",
-            "id"       => "https://{$server}/{$guid}",
+            "id"       => "{$base_url}{$guid}",
             "type"     => "Accept",
-            "actor"    => "https://{$server}/ap/actor",
+            "actor"    => "{$base_url}ap/actor",
             "object"   => [
                 "@context" => "https://www.w3.org/ns/activitystreams",
-                "id"       => $body["id"],
+                "id"       => $body["id"] ?? null,
                 "type"     => "Follow",
-                "actor"    => $follower_actor,
-                "object"   => "https://{$server}/ap/actor",
+                "actor"    => $actor_uri,
+                "object"   => "{$base_url}ap/actor",
             ],
         ];
         sendMessageToSingle($follower_inbox, $message);
-        save_log("Follow.Accept", "actor: {$follower_actor}");
+        save_log("Follow.Accept", "actor: {$actor_uri}");
         http_response_code(202);
         die();
     }
 
     if ($type === "Undo") {
-        $actor_uri = $body["actor"] ?? null;
         if (!System\Database\get_follower($db_handler, $actor_uri)) {
             http_response_code(202);
-            die();
-        }
-        if (!verifyHTTPSignature()) {
-            http_response_code(401);
             die();
         }
         undo($body);
@@ -214,6 +247,7 @@ function inbox() {
         die();
     }
 
+    // Everything else is accepted and ignored — SUFI is a publishing server.
     http_response_code(202);
     die();
 }
@@ -264,10 +298,10 @@ function create_post_endpoint() {
 }
 
 function create_post($content, $in_reply_to = null) {
-    global $server, $db_handler;
+    global $base_url, $db_handler;
 
     $guid      = uuid();
-    $base      = "https://{$server}/";
+    $base      = $base_url;
     $published = date('c');
 
     $note = [
@@ -308,8 +342,15 @@ function show_post($guid) {
         echo "Not found";
         return;
     }
+
+    // A post URL identifies the Note, not the Create/Update wrapper around it.
+    $data = json_decode($post['data'], true) ?: [];
+    if (in_array($data['type'] ?? null, ['Create', 'Update'], true) && is_array($data['object'] ?? null)) {
+        $data = $data['object'];
+    }
+
     header('Content-Type: application/activity+json; charset=utf-8');
-    echo $post['data'];
+    echo json_encode($data);
 }
 
 function list_posts() {
@@ -328,7 +369,7 @@ function list_posts() {
 }
 
 function delete_post_endpoint($guid) {
-    global $db_handler, $server;
+    global $base_url, $db_handler;
 
     if (!panel_auth()) { http_response_code(401); echo "Unauthorized"; return; }
     require_csrf_if_session();
@@ -339,11 +380,11 @@ function delete_post_endpoint($guid) {
 
     $activity = [
         "@context" => "https://www.w3.org/ns/activitystreams",
-        "id"       => "https://{$server}/ap/activity/" . uuid(),
+        "id"       => "{$base_url}ap/activity/" . uuid(),
         "type"     => "Delete",
-        "actor"    => "https://{$server}/ap/actor",
+        "actor"    => "{$base_url}ap/actor",
         "to"       => ["https://www.w3.org/ns/activitystreams#Public"],
-        "object"   => "https://{$server}/ap/post/{$guid}",
+        "object"   => "{$base_url}ap/post/{$guid}",
     ];
     sendToFollowers($activity);
     System\Database\delete_post($db_handler, $guid);
@@ -351,7 +392,7 @@ function delete_post_endpoint($guid) {
 }
 
 function update_post_endpoint($guid) {
-    global $body, $db_handler, $server;
+    global $body, $base_url, $db_handler;
 
     if (!panel_auth()) { http_response_code(401); echo "Unauthorized"; return; }
     require_csrf_if_session();
@@ -363,7 +404,7 @@ function update_post_endpoint($guid) {
     if (!$post) { http_response_code(404); echo "Not found"; return; }
 
     $updated   = date('c');
-    $base      = "https://{$server}/";
+    $base      = $base_url;
     $actor_url = "{$base}ap/actor";
 
     $note = [
@@ -399,7 +440,7 @@ function update_post_endpoint($guid) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function action_users() {
-    global $server, $db_handler;
+    global $base_url, $db_handler;
 
     if (!panel_auth()) {
         http_response_code(401);
@@ -420,13 +461,20 @@ function action_users() {
     $details      = getUserDetails($user);
     $profileInbox = $details["inbox"];
     $profileUrl   = $details["profile"];
+
+    if (!$profileUrl || !$profileInbox) {
+        http_response_code(400);
+        echo "Could not resolve that handle";
+        return;
+    }
+
     $guid         = uuid();
-    $actor_url    = "https://{$server}/ap/actor";
+    $actor_url    = "{$base_url}ap/actor";
 
     if ($action === "Follow") {
         $message = [
             "@context" => "https://www.w3.org/ns/activitystreams",
-            "id"       => "https://{$server}/{$guid}",
+            "id"       => "{$base_url}{$guid}",
             "type"     => "Follow",
             "actor"    => $actor_url,
             "object"   => $profileUrl,
@@ -434,7 +482,7 @@ function action_users() {
     } elseif ($action === "Unfollow") {
         $message = [
             "@context" => "https://www.w3.org/ns/activitystreams",
-            "id"       => "https://{$server}/{$guid}",
+            "id"       => "{$base_url}{$guid}",
             "type"     => "Undo",
             "actor"    => $actor_url,
             "object"   => ["type" => "Follow", "actor" => $actor_url, "object" => $profileUrl],
@@ -442,7 +490,7 @@ function action_users() {
     } elseif ($action === "Block") {
         $message = [
             "@context" => "https://www.w3.org/ns/activitystreams",
-            "id"       => "https://{$server}/{$guid}",
+            "id"       => "{$base_url}{$guid}",
             "type"     => "Block",
             "actor"    => $actor_url,
             "object"   => $profileUrl,
@@ -451,7 +499,7 @@ function action_users() {
     } else {
         $message = [
             "@context" => "https://www.w3.org/ns/activitystreams",
-            "id"       => "https://{$server}/{$guid}",
+            "id"       => "{$base_url}{$guid}",
             "type"     => "Undo",
             "actor"    => $actor_url,
             "object"   => ["type" => "Block", "actor" => $actor_url, "object" => $profileUrl],
@@ -485,8 +533,8 @@ function remote_follow() {
     $parts = explode('@', ltrim($uri, '@'));
     if (count($parts) === 2) {
         $remote_server = $parts[1];
-        global $server;
-        $actor_url = urlencode("https://{$server}/ap/actor");
+        global $base_url;
+        $actor_url = urlencode("{$base_url}ap/actor");
         header("Location: https://{$remote_server}/authorize_interaction?uri={$actor_url}");
         die();
     }
@@ -504,10 +552,20 @@ function undo($message) {
 
     $object      = $message["object"] ?? null;
     $object_type = is_array($object) ? ($object["type"] ?? null) : null;
-    $actor       = is_array($object) ? ($object["actor"] ?? $message["actor"]) : $message["actor"];
+    $actor       = is_array($object) ? ($object["actor"] ?? $message["actor"]) : ($message["actor"] ?? null);
+
+    if (!is_string($actor) || $actor === '') {
+        return;
+    }
 
     if ($object_type === "Follow") {
         System\Database\remove_follower($db_handler, $actor);
+    } elseif ($object_type === "Like") {
+        $liked = $object["object"] ?? null;
+        $liked = is_array($liked) ? ($liked["id"] ?? null) : $liked;
+        if (is_string($liked) && $liked !== '') {
+            System\Database\remove_like($db_handler, $liked, $actor);
+        }
     }
 }
 
@@ -516,9 +574,9 @@ function undo($message) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function generate_signed_headers($message, $host, $path, $method) {
-    global $server, $key_private;
+    global $base_url, $key_private;
 
-    $keyId  = "https://{$server}/ap/actor#main-key";
+    $keyId  = "{$base_url}ap/actor#main-key";
     $signer = openssl_get_privatekey($key_private);
     $date   = date("D, d M Y H:i:s \G\M\T");
 
@@ -538,6 +596,7 @@ function generate_signed_headers($message, $host, $path, $method) {
             "Signature: {$sig_hdr}",
             "Content-Type: application/activity+json",
             "Accept: application/activity+json",
+            "User-Agent: SUFI (+{$base_url})",
         ];
     }
 
@@ -551,13 +610,16 @@ function generate_signed_headers($message, $host, $path, $method) {
         "Date: {$date}",
         "Signature: {$sig_hdr}",
         "Accept: application/activity+json, application/json",
+        "User-Agent: SUFI (+{$base_url})",
     ];
 }
 
 function sendMessageToSingle($inbox, $message) {
-    $parsed  = parse_url($inbox);
-    $host    = $parsed['host'];
-    $path    = $parsed['path'] . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
+    $parsed = parse_url($inbox);
+    if (empty($parsed['host'])) { return; }
+
+    $host    = $parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : '');
+    $path    = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
     $headers = generate_signed_headers($message, $host, $path, 'POST');
     $json    = json_encode($message);
 
@@ -568,7 +630,14 @@ function sendMessageToSingle($inbox, $message) {
         'ignore_errors'  => true,
         'timeout'        => 10,
     ]]);
-    @file_get_contents($inbox, false, $ctx);
+    $response = @file_get_contents($inbox, false, $ctx);
+
+    $status = $http_response_header[0] ?? '';
+    if ($response === false) {
+        save_log('Delivery.Fail', "inbox: {$inbox}");
+    } elseif (!preg_match('#^HTTP/\S+\s+2\d\d#', $status)) {
+        save_log('Delivery.Reject', "inbox: {$inbox} status: {$status}");
+    }
 }
 
 function sendToFollowers($message) {
@@ -579,9 +648,15 @@ function sendToFollowers($message) {
 }
 
 function getDataFromURl($url) {
-    $parsed  = parse_url($url);
-    $host    = $parsed['host'];
-    $path    = $parsed['path'] . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
+    static $cache = [];
+    if (array_key_exists($url, $cache)) { return $cache[$url]; }
+
+    $fetch   = strtok($url, '#');
+    $parsed  = parse_url($fetch);
+    if (empty($parsed['host'])) { return $cache[$url] = null; }
+
+    $host    = $parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : '');
+    $path    = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
     $headers = generate_signed_headers(null, $host, $path, 'GET');
 
     $ctx = stream_context_create(['http' => [
@@ -590,12 +665,15 @@ function getDataFromURl($url) {
         'ignore_errors' => true,
         'timeout'       => 10,
     ]]);
-    $response = @file_get_contents($url, false, $ctx);
-    return $response ? json_decode($response, true) : null;
+    $response = @file_get_contents($fetch, false, $ctx);
+    return $cache[$url] = ($response ? json_decode($response, true) : null);
 }
 
 function getUserDetails($handle) {
-    $parts = explode("@", ltrim($handle, "@"));
+    $parts = explode("@", ltrim((string) $handle, "@"));
+    if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+        return ["profile" => null, "inbox" => null];
+    }
     [$follow_name, $follow_server] = $parts;
 
     $webfinger_url = "https://{$follow_server}/.well-known/webfinger?resource=acct:{$follow_name}@{$follow_server}";
@@ -622,84 +700,124 @@ function getUserDetails($handle) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function verifyHTTPSignature() {
-    global $input, $body, $server, $directories;
+    global $input, $body;
 
-    $type    = urlencode($body["type"] ?? "unknown");
-    $headers = array_change_key_case(get_request_headers(), CASE_LOWER);
+    $type      = urlencode($body["type"] ?? "unknown");
+    $method    = strtoupper($_SERVER["REQUEST_METHOD"] ?? "GET");
+    $headers   = array_change_key_case(get_request_headers(), CASE_LOWER);
+    $actor_uri = $body["actor"] ?? null;
+
+    $fail = function (string $reason, string $detail = "") use ($type) {
+        save_log("{$type}.Signature.{$reason}", $detail);
+        return false;
+    };
+
+    if (!is_string($actor_uri) || $actor_uri === "") {
+        return $fail("NoActor");
+    }
 
     if (!isset($headers["date"])) {
-        save_log("{$type}.Signature.NoDate", print_r($headers, true));
-        return null;
+        return $fail("NoDate", print_r($headers, true));
     }
 
-    $headerDatetime  = \DateTime::createFromFormat('D, d M Y H:i:s T', $headers["date"]);
-    $currentDatetime = new \DateTime();
-
-    if (abs($currentDatetime->getTimestamp() - $headerDatetime->getTimestamp()) > 3600) {
-        save_log("{$type}.Signature.DateDrift", "header: " . $headers["date"]);
-        return false;
+    $header_datetime = \DateTime::createFromFormat('D, d M Y H:i:s T', $headers["date"]);
+    if (!$header_datetime) {
+        return $fail("BadDate", $headers["date"]);
     }
 
-    if (isset($body["published"])) {
-        $publishedDatetime = new \DateTime($body["published"]);
-        if (abs($publishedDatetime->getTimestamp() - $headerDatetime->getTimestamp()) > 120) {
-            save_log("{$type}.Signature.PublishedSkew", "published: " . $body["published"]);
-            return false;
+    if (abs(time() - $header_datetime->getTimestamp()) > 3600) {
+        return $fail("DateDrift", $headers["date"]);
+    }
+
+    if (isset($body["published"]) && is_string($body["published"])) {
+        try {
+            $published = new \DateTime($body["published"]);
+        } catch (\Exception $e) {
+            return $fail("BadPublished", $body["published"]);
         }
-    }
-
-    if (isset($headers["digest"])) {
-        [$digestAlgorithm, $digestHash] = explode("=", $headers["digest"], 2);
-        $algo = match(strtoupper($digestAlgorithm)) {
-            "SHA-256", "HS2019" => "sha256",
-            "SHA-512"           => "sha512",
-            default             => strtolower($digestAlgorithm),
-        };
-        if (base64_encode(hash($algo, $input, true)) !== $digestHash) {
-            save_log("{$type}.Signature.DigestFail", "expected: " . base64_encode(hash($algo, $input, true)));
-            return false;
+        if (abs($published->getTimestamp() - $header_datetime->getTimestamp()) > 120) {
+            return $fail("PublishedSkew", $body["published"]);
         }
     }
 
     $sig_header = $headers["signature"] ?? null;
-    if (!$sig_header) { return false; }
+    if (!$sig_header) {
+        return $fail("NoSignature");
+    }
 
-    preg_match_all('/(\w+)="([^"]+)"/', $sig_header, $m);
-    $parts = array_combine($m[1], $m[2]);
+    preg_match_all('/(\w+)="([^"]*)"/', $sig_header, $m);
+    $parts = array_combine($m[1], $m[2]) ?: [];
+
+    if (empty($parts["keyId"]) || empty($parts["signature"]) || empty($parts["headers"])) {
+        return $fail("Malformed", $sig_header);
+    }
+
+    $signed_headers = preg_split('/\s+/', strtolower(trim($parts["headers"])));
+
+    // The digest must be present and covered by the signature, otherwise the
+    // body could be swapped for something the actor never sent.
+    if ($method === "POST") {
+        if (!isset($headers["digest"])) {
+            return $fail("NoDigest");
+        }
+        if (!in_array("digest", $signed_headers, true)) {
+            return $fail("DigestUnsigned", $parts["headers"]);
+        }
+
+        [$digest_algorithm, $digest_hash] = array_pad(explode("=", $headers["digest"], 2), 2, "");
+        $algo = match (strtoupper($digest_algorithm)) {
+            "SHA-256", "HS2019" => "sha256",
+            "SHA-512"           => "sha512",
+            default             => strtolower($digest_algorithm),
+        };
+        if (!hash_equals(base64_encode(hash($algo, $input, true)), $digest_hash)) {
+            return $fail("DigestFail");
+        }
+    }
 
     $signed = "";
-    foreach (explode(" ", $parts["headers"]) as $h) {
+    foreach ($signed_headers as $h) {
         if ($h === "(request-target)") {
-            $method = strtolower($_SERVER["REQUEST_METHOD"]);
-            $signed .= "(request-target): {$method} " . $_SERVER["REQUEST_URI"] . "\n";
+            $signed .= "(request-target): " . strtolower($method) . " " . $_SERVER["REQUEST_URI"] . "\n";
         } elseif ($h === "host") {
-            $signed .= "host: " . strtolower($_SERVER["HTTP_HOST"]) . "\n";
+            $signed .= "host: " . strtolower($_SERVER["HTTP_HOST"] ?? "") . "\n";
         } else {
             $signed .= "{$h}: " . ($headers[$h] ?? "") . "\n";
         }
     }
     $signed = rtrim($signed);
 
-    $key_data   = getDataFromURl($parts["keyId"]);
+    $key_data   = getDataFromURl(strtok($parts["keyId"], "#"));
     $public_key = $key_data["publicKey"]["publicKeyPem"] ?? null;
-    if (!$public_key) { return false; }
-
-    $actor_data    = getDataFromURl($body["actor"]);
-    $actor_pub_key = $actor_data["publicKey"]["publicKeyPem"] ?? null;
-    if ($public_key !== $actor_pub_key) {
-        save_log("{$type}.Signature.KeyMismatch", "keyId: " . $parts["keyId"]);
-        return false;
+    if (!$public_key) {
+        return $fail("NoPublicKey", $parts["keyId"]);
     }
 
-    $algorithm = match($parts["algorithm"] ?? "rsa-sha256") {
-        "hs2019"     => "sha256",
-        "rsa-sha512" => "sha512",
-        default      => "sha256",
+    $actor_data    = getDataFromURl($actor_uri) ?: [];
+    $actor_pub_key = $actor_data["publicKey"]["publicKeyPem"] ?? null;
+    if (!$actor_pub_key || !hash_equals($public_key, $actor_pub_key)) {
+        return $fail("KeyMismatch", $parts["keyId"]);
+    }
+
+    // keyId must live on the actor's host, otherwise one instance could sign
+    // activities on behalf of an actor it does not own.
+    $key_host   = strtolower((string) parse_url($parts["keyId"], PHP_URL_HOST));
+    $actor_host = strtolower((string) parse_url($actor_uri, PHP_URL_HOST));
+    if ($key_host === "" || $key_host !== $actor_host) {
+        return $fail("HostMismatch", "keyId: {$parts["keyId"]} actor: {$actor_uri}");
+    }
+
+    $algorithm = match (strtolower($parts["algorithm"] ?? "rsa-sha256")) {
+        "rsa-sha512" => OPENSSL_ALGO_SHA512,
+        default      => OPENSSL_ALGO_SHA256,
     };
 
     $result = openssl_verify($signed, base64_decode($parts["signature"]), $public_key, $algorithm);
-    save_log("{$type}.Signature." . json_encode($result === 1), "actor: " . ($body["actor"] ?? ""));
-    return $result === 1;
+    if ($result !== 1) {
+        return $fail("Invalid", "openssl: {$result}");
+    }
+
+    return true;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

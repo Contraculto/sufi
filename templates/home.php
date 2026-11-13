@@ -1,6 +1,6 @@
 <?php
-global $server, $username, $user_data;
-$base = "https://{$server}/";
+global $server, $username, $user_data, $base_url;
+$base = $base_url;
 header('Content-Type: text/html; charset=utf-8');
 ?><!DOCTYPE html>
 <html lang="en">

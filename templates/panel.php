@@ -1,5 +1,5 @@
 <?php
-global $server, $username;
+global $server, $username, $panel_url, $base_url;
 header('Content-Type: text/html; charset=utf-8');
 
 if (empty($_SESSION['auth'])):
@@ -29,7 +29,7 @@ button { background: var(--accent); color: var(--bg); border: none; padding: .4r
 </style>
 </head>
 <body>
-<form method="post" action="/sufi/login">
+<form method="post" action="">
   <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
   <?php if (isset($_GET['error'])): ?>
   <p class="err">wrong password</p>
@@ -138,7 +138,7 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 <div id="app">
   <header>
     <h1>@<?= $username ?>@<?= $server ?></h1>
-    <a href="/sufi/logout"><button>logout</button></a>
+    <a href="?logout=1"><button>logout</button></a>
   </header>
 
   <div id="compose">
@@ -165,7 +165,7 @@ button.danger { background: none; border: 1px solid var(--border); color: var(--
 </div>
 
 <script>
-const BASE = window.location.origin;
+const BASE = <?= json_encode(rtrim($base_url, '/')) ?>;
 const CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
 
 function setStatus(msg, ok = true) {
@@ -177,7 +177,7 @@ function setStatus(msg, ok = true) {
 
 async function get(path) {
     const r = await fetch(`${BASE}${path}`, { credentials: 'same-origin' });
-    if (r.status === 401) { location.href = '/sufi/'; return null; }
+    if (r.status === 401) { location.href = <?= json_encode($panel_url) ?>; return null; }
     return r.json();
 }
 
@@ -191,7 +191,7 @@ async function api(path, data) {
         },
         body: new URLSearchParams(data)
     });
-    if (r.status === 401) { location.href = '/sufi/'; }
+    if (r.status === 401) { location.href = <?= json_encode($panel_url) ?>; }
     return r;
 }
 

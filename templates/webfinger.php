@@ -2,8 +2,8 @@
 namespace SUFI\Templates;
 
 function webfinger($user_data) {
-    global $server, $username;
-    $base = "https://{$server}/";
+    global $server, $username, $base_url;
+    $base = $base_url;
 
     $data = [
         "subject" => "acct:{$username}@{$server}",

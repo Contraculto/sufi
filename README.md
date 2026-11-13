@@ -142,10 +142,15 @@ $server    = 'example.com';      // your domain, no https://
 $username  = 'alice';            // your fediverse handle
 $password  = 'change-this-to-a-long-random-string';
 
-// Leave empty if SUFI is at the domain root.
-// Set to '/sufi' if the files are in a /sufi/ subdirectory.
-$base_path = '/sufi';
+// Leave this empty for the normal setup, where /ap/* and /.well-known/* are
+// routed to SUFI at the domain root. Only set a prefix if *all* SUFI URLs live
+// under one (e.g. '/instance' for https://example.com/instance/ap/actor).
+$base_path = '';
 ```
+
+`$base_path` is not about where the files sit on disk. In the recommended
+setup the files live in `/var/www/html/sufi/` but the activity URLs are still
+`https://example.com/ap/actor`, so `$base_path` stays empty.
 
 ### 5. Initialize the database
 
@@ -230,6 +235,22 @@ curl -s -H "Accept: application/activity+json" https://example.com/ap/actor | py
 
 Then search for `@alice@example.com` in Mastodon or any other fediverse client. You should be able to follow yourself.
 
+### 8. Updating an existing install
+
+`scripts/deploy.sh` runs the test suite, uploads the application files and
+checks the federation endpoints afterwards. It never touches `sys/` runtime
+files on the server.
+
+```bash
+./scripts/deploy.sh --dry-run   # preview, including files it would delete
+./scripts/deploy.sh             # tests + upload + smoke check
+./scripts/deploy.sh --quick     # skip tests (hotfix)
+```
+
+It defaults to `contraculto.com:/var/www/contraculto/sufi`; override with
+`CONTRACULTO_DEPLOY_HOST` and `SUFI_REMOTE_DIR`. On the server the panel lives
+at `/sufi/`, while the activity URLs stay at the domain root.
+
 ---
 
 ## API
@@ -240,7 +261,7 @@ SUFI has a simple HTTP API for creating content and managing social connections.
 
 Two methods are supported:
 
-1. **Session cookie** — log in via `/sufi/login` and use the returned cookie for all requests. This is what the web panel uses.
+1. **Session cookie** — log in through the panel at `/sufi/` and use the returned cookie for all requests. This is what the web panel uses.
 2. **Password in request body** — include `password=your-secret` in POST form data or JSON for write endpoints.
 
 Read-only endpoints (`GET /ap/post`, `GET /ap/inbox`) require a session cookie. Write endpoints accept either method.
@@ -319,7 +340,7 @@ Returns the 50 most recent items received by the inbox.
 # Log in and save the session cookie
 curl -c sufi.cookies -b sufi.cookies \
   -d "password=your-secret" \
-  https://example.com/sufi/login
+  https://example.com/sufi/
 
 # Create a post using the session
 curl -c sufi.cookies -b sufi.cookies \
@@ -403,8 +424,9 @@ rm sys/sufi.sqlite
 - Never commit `sys/private.pem` or `sys/sufi.sqlite` to version control — add them to `.gitignore`
 - The `password` in `config.php` is compared with `===` (plain string). Use a long random value. There is no rate limiting, so consider IP-restricting `/ap/post` and `/ap/action` at the web server level if needed
 - Browser-based requests use a session cookie protected by a CSRF token; script/API clients authenticate with the password in the request body
-- Signature verification is performed for all Follow and Undo activities
-- Incoming `Create`, `Announce`, `Like`, `Update`, and `Delete` activities are accepted with HTTP 202 but not stored — SUFI is a publishing server, not a reader
+- Every activity posted to the inbox is signature-checked before it is stored or acted on: unsigned, tampered, or wrong-key deliveries get HTTP 401
+- Incoming `Create` and `Announce` activities are stored as inbox items, `Like`s also land in the likes collection, `Follow`/`Undo` update followers. Everything else is accepted and ignored — SUFI is a publishing server, not a reader
+- The panel logs in by posting back to `/sufi/` itself, so it works without extra rewrite rules for `/sufi/login` or `/sufi/logout`
 
 ---
 
@@ -418,6 +440,25 @@ sqlite3 sys/sufi.sqlite "UPDATE Actor SET public_key='$NEW_KEY' WHERE id=1;"
 ```
 
 Followers will get your new key the next time their server fetches your actor profile.
+
+---
+
+## Testing
+
+The whole suite runs locally with nothing but PHP and OpenSSL:
+
+```bash
+./scripts/test.sh
+```
+
+It builds two throwaway instances in a temp directory (one at the domain root,
+one under `/sufi`), starts a fake remote server, exercises discovery, posting,
+panel login/CSRF, inbox signature checks and federation delivery, then deletes
+everything. Your real `sys/` directory is never touched.
+
+To watch the sandbox instead of deleting it: `SUFI_TEST_KEEP=1 ./scripts/test.sh`.
+It prints the directory path; start the instances with `php -S` if you want to
+poke at them by hand.
 
 ---
 

@@ -111,6 +111,13 @@ function add_like($DBH, $object_uri, $actor_uri) {
     );
 }
 
+function remove_like($DBH, $object_uri, $actor_uri) {
+    run($DBH,
+        "DELETE FROM Like WHERE object_uri = ? AND actor_uri = ?",
+        [$object_uri, $actor_uri]
+    );
+}
+
 // ── Posts (extended) ──────────────────────────────────────────────────────────
 
 function delete_post($DBH, $guid) {

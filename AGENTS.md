@@ -12,6 +12,9 @@ cd /mnt/Sixto/DEV/sufi
 # Local dev server (PHP built-in)
 php -S 127.0.0.1:8080
 
+# Tests (spins throwaway instances in a temp dir)
+./scripts/test.sh
+
 # Production deploy
 # Sync files to your server, then follow README.md setup steps.
 ```
@@ -36,8 +39,10 @@ php -S 127.0.0.1:8080
 sufi/
 ├── index.php               # Entry point / router
 ├── sys/                    # Keys, SQLite DB, logs
-├── templates/              # HTML templates
+├── templates/              # HTML templates (ActivityPub JSON + panel)
 ├── deploy/                 # Web server configuration examples
+├── scripts/test.sh         # Test runner (lint + sandbox + suite)
+├── tests/                  # tests/run.php + fake remote server fixture
 └── .htaccess               # Apache rewrite rules
 ```
 
@@ -52,21 +57,31 @@ sufi/
 | Verify HTTP Signatures | `index.php` (signature verification logic) |
 | Change HTML views | `templates/` |
 | Rotate keys | `sys/` (regenerate RSA pair) |
+| Add or fix a test | `tests/run.php` (assertions), `scripts/test.sh` (setup) |
 
 ---
 
 ## 5. Dev Commands
 
 ```bash
-php -S 127.0.0.1:8080       # Local server
+php -S 127.0.0.1:8080       # Local server (needs sys/private.pem + an Actor row)
 php -l index.php            # Syntax check
+./scripts/test.sh           # Full suite, no dependencies beyond PHP + OpenSSL
 ```
 
 ---
 
 ## 6. Deploy
 
-Deploy manually: sync all files except `sys/` to the server, then generate keys and configure `sys/config.php` using the setup steps in `README.md`.
+```bash
+./scripts/deploy.sh --dry-run    # preview (shows deletions too)
+./scripts/deploy.sh              # tests + upload + federation smoke check
+./scripts/deploy.sh --quick      # skip tests
+```
+
+Targets `contraculto.com:/var/www/contraculto/sufi` by default. Only application
+files are uploaded; `sys/config.php`, keys, `sufi.sqlite` and `logs/` stay on the
+server. First-time installs still need keys + an `Actor` row (see `README.md`).
 
 See `deploy/` for Apache and Nginx configuration examples.
 
@@ -77,5 +92,6 @@ See `deploy/` for Apache and Nginx configuration examples.
 1. **Never commit `sys/private.pem`.** This is the ActivityPub signing key. Leaking it allows anyone to impersonate your actor.
 2. **SQLite must be web-server-writable.** The `sys/` directory needs write permissions for the PHP process.
 3. **ActivityPub is strict about Content-Type.** All JSON-LD responses must use `application/activity+json`.
-4. **HTTP Signatures are mandatory.** Every incoming POST to inbox must be verified. Every outgoing activity must be signed.
+4. **HTTP Signatures are mandatory.** Every activity posted to the inbox is verified *before* it is stored or acted on — do not move `verifyHTTPSignature()` below database writes. Every outgoing activity must be signed.
 5. **No Composer autoloading.** This project is dependency-free. Include files manually if needed.
+6. **Run `./scripts/test.sh` before touching production.** It covers discovery, posting, panel auth, inbox signature rejection and delivery. Not shipping untested federation changes matters more here than in a normal app: a broken signature check can silently defederate you.

@@ -9,9 +9,16 @@ $password  = 'change-this-to-a-long-random-string';
 // Set to false to disable the web panel at /sufi/
 $panel_enabled = true;
 
-// If SUFI is deployed inside a subdirectory (e.g. /sufi/), set this to '/sufi'.
-// If SUFI is at the domain root (e.g. /.well-known/webfinger → index.php), leave empty.
+// Only send the session cookie over HTTPS. Turned off automatically when the
+// request is plain HTTP (local `php -S` development).
+$cookie_secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+
+// If all SUFI URLs live under a prefix (e.g. https://example.com/instance/ap/actor),
+// set this to '/instance'. If activity URLs are at the domain root — the usual
+// setup, where /ap/* and /.well-known/* are routed here — leave it empty.
 $base_path = '';
+$base_path = rtrim($base_path, '/');
+$base_url  = 'https://' . $server . $base_path . '/';
 
 // RSA private key — generate with:
 //   openssl genrsa -out sys/private.pem 2048
