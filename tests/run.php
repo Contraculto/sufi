@@ -416,6 +416,102 @@ if ($node !== '' && preg_match('#<script>(.*?)</script>#s', $r[2], $script_match
     $js_code   = 0;
     exec(escapeshellarg($node) . ' --check ' . escapeshellarg($script_file) . ' 2>&1', $js_output, $js_code);
     check('panel javascript parses', 0, $js_code);
+
+    // Hostile-fixture guard: remote actors control handles, urls and text,
+    // so the group renderers must escape everything they inject.
+    $harness_file = tempnam(sys_get_temp_dir(), 'sufi-js-');
+    file_put_contents($harness_file, <<<'JS'
+'use strict';
+const fs = require('fs');
+// Top-level loadPosts() awaits fetch() before touching the DOM: keep it
+// pending forever so the include neither hits the network nor rejects.
+globalThis.fetch = () => new Promise(() => {});
+const autoEl = () => ({
+    value: '', innerHTML: '', textContent: '', style: {},
+    classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener() {}, focus() {},
+});
+const byId = {};
+globalThis.document = {
+    // Renderers probe for already-shown inbox nodes; a fresh DOM has none.
+    getElementById: id => /^inbox-/.test(id) ? null : (byId[id] ??= autoEl()),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+};
+globalThis.location = { href: '', origin: 'http://127.0.0.1' };
+(0, eval)(fs.readFileSync(process.argv[2], 'utf8'));
+
+const hostileReply = {
+    id: 11,
+    actor_uri: 'https://evil.example/users/x',
+    actor_handle: '<img src=x onerror=alert(1)>',
+    object_uri: 'x" onmouseover="alert(1)',
+    preview: '<script>alert(1)</script>',
+    created_at: '2026-11-20 10:00:00',
+    is_read: 0,
+    has_children: true,
+    children: { replies: [{
+        id: 12, actor_uri: 'https://evil.example/users/y', actor_handle: 'y@evil.example',
+        object_uri: 'https://evil.example/note/12', preview: '<script>alert(2)</script>',
+        created_at: '2026-11-20 11:00:00', is_read: 0, has_children: false,
+    }] },
+};
+const localGroup = {
+    type: 'group',
+    parent_uri: 'https://local.test/ap/post/abc',
+    parent: { local: true, content: 'Fish &amp; Chips <b>bold</b>' },
+    count: 2,
+    is_read: 0,
+    replies: [hostileReply, {
+        id: 13, actor_uri: 'https://ok.example/u', actor_handle: 'ok@ok.example',
+        object_uri: '', preview: 'plain', created_at: '2026-11-21 09:00:00',
+        is_read: 1, has_children: false,
+    }],
+};
+const remoteGroup = {
+    type: 'group',
+    parent_uri: 'https://remote.example/note?id=1&x=2',
+    parent: { local: false },
+    count: 1,
+    is_read: 1,
+    replies: [{
+        id: 21, actor_uri: 'https://remote.example/u', actor_handle: 'r@remote.example',
+        object_uri: 'https://remote.example/note/21', preview: 'hello',
+        created_at: '2026-11-22 08:00:00', is_read: 1, has_children: false,
+    }],
+};
+
+const out = renderInboxGroup(localGroup, 0) + renderInboxGroup(remoteGroup, 0);
+const failures = [];
+const no = (label, bad) => { if (bad) failures.push(label); };
+
+// No raw markup or attribute breakout from hostile remote values.
+no('raw <img from handle', out.includes('<img'));
+no('raw <script from preview', /<script/i.test(out));
+no('onmouseover breakout', out.includes('onmouseover="'));
+// The escaped forms must be present instead.
+no('handle not escaped', !out.includes('&lt;img src=x onerror=alert(1)&gt;'));
+no('preview not escaped', !out.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+// Local parent: tags stripped, entity escaped as text (never decoded).
+no('parent entity decoded', !out.includes('Fish &amp;amp; Chips'));
+no('parent tag leaked', out.includes('<b>'));
+// Remote parent: host text linking to the full escaped uri.
+no('remote parent not linked', !out.includes('href="https://remote.example/note?id=1&amp;x=2"'));
+no('remote link text is host', !out.includes('>remote.example</a>'));
+// Rendered at all, dedup probe honoured.
+no('group card missing', !out.includes('id="inbox-g13"'));
+no('nested reply missing', !out.includes('id="inbox-12"'));
+
+if (failures.length) {
+    console.error('fixture failures: ' + failures.join('; '));
+    process.exit(1);
+}
+JS);
+    $fixture_output = [];
+    $fixture_code   = 0;
+    exec(escapeshellarg($node) . ' ' . escapeshellarg($harness_file) . ' ' . escapeshellarg($script_file) . ' 2>&1', $fixture_output, $fixture_code);
+    check('group renderers escape hostile fixtures', 0, $fixture_code);
+    unlink($harness_file);
     unlink($script_file);
 }
 

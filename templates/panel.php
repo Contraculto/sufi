@@ -278,8 +278,6 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 .letter-actions { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .55rem; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--stamp); }
 .thread { margin-top: .7rem; padding-left: .8rem; border-left: 2px solid var(--rule); }
-.thread-post { padding: .35rem 0; }
-.thread-post .kind { display: block; margin-bottom: .2rem; }
 .letter.group { border-left: 3px solid var(--rule); }
 .letter.group.unread { border-left-color: var(--stamp); }
 .group-parent { color: var(--ink-soft); font-size: .88rem; }
@@ -612,7 +610,7 @@ function renderInboxGroup(group, depth = 0) {
 
     const parent = group.parent && group.parent.local
         ? `<div class="letter-body group-parent">${groupParentExcerpt(group.parent.content)}</div>`
-        : `<div class="letter-body muted">replying to ${host}</div>`;
+        : `<div class="letter-body muted">replying to <a href="${esc(group.parent_uri)}" target="_blank" rel="noopener noreferrer">${host}</a></div>`;
 
     return `<article class="letter group${group.is_read ? '' : ' unread'}" id="inbox-g${newest.id}">
         <div class="letter-head">
@@ -714,6 +712,7 @@ async function loadInbox(reset = true) {
     } else {
         document.getElementById('inbox-more')?.remove();
         panel.insertAdjacentHTML('beforeend', html);
+        dropEmptyGroups();
     }
 
     inboxCursor = page.next_before_id;

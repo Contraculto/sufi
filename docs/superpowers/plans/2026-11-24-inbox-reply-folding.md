@@ -22,7 +22,7 @@
 - Modify: `index.php:433-478` (`inbox_items()`), add helpers after `inbox_preview()` (`index.php:605-612`)
 - Test: `tests/run.php:634-725` (update existing inbox assertions), insert a new folding block after `tests/run.php:725`
 
-- [ ] **Step 1: Rewrite the inbox test block (failing test)**
+- [x] **Step 1: Rewrite the inbox test block (failing test)**
 
 In `tests/run.php`, replace lines 634–641 with:
 
@@ -176,12 +176,12 @@ check('page two carries nested reply', 1, (int) ($page2['entries'][0]['replies']
 check('fold pages exhausted', true, empty($page2['next_before_id']));
 ```
 
-- [ ] **Step 2: Run the suite to verify the inbox tests fail**
+- [x] **Step 2: Run the suite to verify the inbox tests fail**
 
 Run: `./scripts/test.sh`
 Expected: FAIL — the new/updated inbox assertions fail because the response still has `items`, not `entries` (e.g. `inbox response has entries and unread`). Sections before the inbox section must stay green.
 
-- [ ] **Step 3: Implement the grouping in `index.php`**
+- [x] **Step 3: Implement the grouping in `index.php`**
 
 In `inbox_items()` (`index.php:433`), change the global import and the response assembly. Replace this block (lines 433–477):
 
@@ -366,12 +366,12 @@ function inbox_parent_summary($db_handler, string $uri, string $local_prefix) {
 }
 ```
 
-- [ ] **Step 4: Run the suite to verify it passes**
+- [x] **Step 4: Run the suite to verify it passes**
 
 Run: `./scripts/test.sh`
 Expected: PASS — entire suite green, including the new `Inbox: reply folding` section.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add index.php tests/run.php
@@ -387,7 +387,7 @@ git commit -m "feat: fold inbox replies into expandable per-post groups"
 
 Note: the panel JS has no automated test coverage in this project (status quo). Verification is `php -l`, a `node --check` syntax pass, and the PHP suite still green.
 
-- [ ] **Step 1: Replace the inbox renderers and `loadInbox` mapping**
+- [x] **Step 1: Replace the inbox renderers and `loadInbox` mapping**
 
 In `templates/panel.php`:
 
@@ -538,7 +538,7 @@ Call `dropEmptyGroups()` at the end of `deleteInboxItem` (after the element remo
 
 6. Delete `toggleThread` (lines 707–735) entirely — the parent content now ships in the payload.
 
-- [ ] **Step 2: Add the CSS**
+- [x] **Step 2: Add the CSS**
 
 Append to the style block after `.thread-post .kind { ... }` (line 282):
 
@@ -558,7 +558,7 @@ Append to the style block after `.thread-post .kind { ... }` (line 282):
 .letter.reply .letter-actions { margin-top: .3rem; }
 ```
 
-- [ ] **Step 3: Syntax checks**
+- [x] **Step 3: Syntax checks**
 
 Run: `php -l templates/panel.php && php -l index.php`
 Expected: `No syntax errors detected` for both.
@@ -566,12 +566,12 @@ Expected: `No syntax errors detected` for both.
 Run: `awk '/<script>/{flag=1;next}/<\/script>/{flag=0}flag' templates/panel.php > /tmp/panel-check.js && node --check /tmp/panel-check.js && rm /tmp/panel-check.js`
 Expected: no output (syntax OK). If `awk` picks up multiple script blocks, checking their concatenation is still valid here because the template has exactly one.
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Run: `./scripts/test.sh`
 Expected: PASS (backend unchanged since Task 1; guards against accidental PHP edits).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add templates/panel.php
