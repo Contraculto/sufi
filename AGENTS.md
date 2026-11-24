@@ -41,6 +41,7 @@ sufi/
 ├── sys/                    # Keys, SQLite DB, logs, delivery queue
 │   └── delivery.php        # signing, fetch guards, delivery worker core
 ├── templates/              # HTML templates (ActivityPub JSON + panel)
+│   ├── _theme.php          # Shared CSS/head for the human-facing pages
 ├── deploy/                 # Web server configuration examples
 ├── scripts/test.sh         # Test runner (lint + sandbox + suite)
 ├── scripts/ops/deliver.php # Delivery worker (cron, every minute)
@@ -63,6 +64,8 @@ sufi/
 | Change actor/profile output | `index.php` (ActivityPub JSON endpoints) |
 | Verify HTTP Signatures | `index.php` (signature verification logic) |
 | Change HTML views | `templates/` |
+| Change the overall look (paper, type, buttons) | `templates/_theme.php` |
+| Public profile page / tag page | `templates/home.php`, `tag_page()` in `index.php` |
 | Rotate keys | Replace `sys/private.pem`; the Actor row syncs on next request |
 | Actor creation | `ensure_actor()` in `sys/database.php` (runs on bootstrap) |
 | Add or fix a test | `tests/run.php` (assertions), `scripts/test.sh` (setup) |

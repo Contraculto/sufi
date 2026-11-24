@@ -181,7 +181,8 @@ function rate_limit_clear($key) {
 function actor_handle($uri, $doc = []) {
     $parts = parse_url((string) $uri);
     $host  = ($parts['host'] ?? '') . (isset($parts['port']) ? ':' . $parts['port'] : '');
-    $user  = $doc['preferredUsername'] ?? basename((string) ($parts['path'] ?? ''));
+    // Mastodon-style actor paths already start with "@" (/@user); don't double it.
+    $user  = ltrim((string) ($doc['preferredUsername'] ?? basename((string) ($parts['path'] ?? ''))), '@');
 
     return '@' . $user . '@' . $host;
 }

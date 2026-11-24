@@ -647,30 +647,59 @@ function delete_inbox_endpoint() {
 }
 
 function tag_page($tag) {
-    global $db_handler, $base_url;
+    global $db_handler, $base_url, $username, $server;
 
-    $posts = System\Database\posts_with_tag($db_handler, $tag);
-    $name  = htmlspecialchars($tag, ENT_QUOTES);
+    require_once __DIR__ . '/templates/_theme.php';
+
+    // Only public entries belong on a page anyone can open.
+    $posts = array_values(array_filter(
+        System\Database\posts_with_tag($db_handler, $tag),
+        fn($p) => ($p['visibility'] ?? 'public') === 'public'
+    ));
+    $label = '#' . $tag;
+    $count = count($posts);
 
     header('Content-Type: text/html; charset=utf-8');
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8">'
-        . '<title>#' . $name . '</title>'
-        . '<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;'
-        . 'line-height:1.5}a{color:inherit}.post{border-bottom:1px solid #ddd;padding:.75rem 0}'
-        . '.meta{color:#777;font-size:.8rem}</style></head><body>'
-        . '<p><a href="' . htmlspecialchars($base_url, ENT_QUOTES) . '">back</a></p>'
-        . '<h1>#' . $name . '</h1>';
+    Templates\theme_head($label . ' — @' . $username . '@' . $server);
+    ?><body>
+<div id="app">
+  <header class="masthead">
+    <div class="kicker">
+      <span>a hashtag on @<?= htmlspecialchars($username . '@' . $server) ?></span>
+      <span><?= date('j F Y') ?></span>
+    </div>
+    <div class="masthead-row">
+      <div>
+        <h1 class="nameplate"><?= htmlspecialchars($label) ?></h1>
+        <div class="handle"><?= (int) $count ?> <?= $count === 1 ? 'entry' : 'entries' ?> tagged</div>
+      </div>
+      <a class="btn ghost small" href="<?= htmlspecialchars($base_url) ?>">back to the page</a>
+    </div>
+  </header>
 
-    if (!$posts) {
-        echo '<p>No posts use this hashtag.</p>';
-    }
-    foreach ($posts as $post) {
-        echo '<div class="post"><div class="meta">'
-            . htmlspecialchars((string) $post['published'], ENT_QUOTES)
-            . '</div><div>' . nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES)) . '</div></div>';
-    }
+  <?php if (!$posts): ?>
+    <div class="empty">Nobody has used this hashtag yet. You could be the first.</div>
+  <?php else: ?>
+  <div class="ledger">
+    <?php foreach ($posts as $post): ?>
+    <article class="entry">
+      <div class="entry-meta">
+        <time datetime="<?= htmlspecialchars((string) $post['published']) ?>"><?= htmlspecialchars(Templates\theme_date((string) $post['published'], '—')) ?></time>
+        <?php if ($post['in_reply'] ?? null): ?><span class="kind">↳ reply</span><?php endif; ?>
+      </div>
+      <div class="entry-body"><?= format_content((string) $post['content']) ?></div>
+    </article>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
 
-    echo '</body></html>';
+  <footer class="colophon">
+    <span>Everything here is public and federated.</span>
+    <span><a href="<?= htmlspecialchars($base_url) ?>ap/outbox">full outbox</a></span>
+  </footer>
+</div>
+</body>
+</html><?php
 }
 
 function inbox_kind($type, array $data) {

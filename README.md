@@ -81,7 +81,8 @@ templates/
   followers.php    builds Followers collection
   following.php    builds Following collection
   likes.php        builds Likes collection
-  home.php         HTML profile page
+  _theme.php       shared look and feel for the HTML pages
+  home.php         HTML profile page (bio, recent public entries)
   panel.php        Admin dashboard (post, edit, follow/unfollow)
 .htaccess          Apache routing
 deploy/

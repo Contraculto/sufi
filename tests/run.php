@@ -237,6 +237,14 @@ check('profile shows handle', true, str_contains($r[2], 'alice@' . parse_url($in
 expect('@handle page', 200, http('GET', "{$instance}/@alice"));
 expect('unknown path', 404, http('GET', "{$instance}/nope"));
 
+section('Actor handles');
+
+require_once $root_dir . '/sys/delivery.php';
+check('handle from plain path', '@bob@example.com', \SUFI\actor_handle('https://example.com/u/bob'));
+check('handle from mastodon path', '@lin@mastodon.social', \SUFI\actor_handle('https://mastodon.social/@lin'));
+check('preferred username wins', '@real@example.com', \SUFI\actor_handle('https://example.com/@alias', ['preferredUsername' => 'real']));
+check('handle keeps port', '@bob@127.0.0.1:8000', \SUFI\actor_handle('http://127.0.0.1:8000/u/bob'));
+
 // ── API auth ──────────────────────────────────────────────────────────────────
 
 section('API authentication');
@@ -294,6 +302,11 @@ $r = expect('unlisted post', 200, post("{$instance}/ap/post", [
 $unlisted = json_body($r)['object'];
 check('unlisted post to followers', ["{$instance}/ap/followers"], $unlisted['to'] ?? null);
 check('unlisted post cc public', ['https://www.w3.org/ns/activitystreams#Public'], $unlisted['cc'] ?? null);
+
+// The public profile page is readable by anyone, so it must not leak these.
+$r = expect('profile page after visibility posts', 200, http('GET', "{$instance}/"));
+check('profile hides private posts', false, str_contains($r[2], 'followers only'));
+check('profile hides unlisted posts', false, str_contains($r[2], '>unlisted<'));
 
 $r = expect('post with content warning', 200, post("{$instance}/ap/post", [
     'content' => 'the spoiler', 'spoiler_text' => 'spoilers ahead', 'password' => 'testpass',

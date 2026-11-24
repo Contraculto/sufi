@@ -1,218 +1,310 @@
 <?php
-global $server, $username, $user_data, $panel_url, $base_url, $max_post_chars;
+global $server, $username, $user_data, $panel_url, $base_url, $max_post_chars, $db_handler;
 header('Content-Type: text/html; charset=utf-8');
 header("Content-Security-Policy: default-src 'none'; img-src 'self' data:; "
     . "style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; "
     . "form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'");
 
+require_once __DIR__ . '/_theme.php';
+
 if (empty($_SESSION['auth'])):
-?><!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sufi</title>
-<style>
-:root { --bg: #fff; --surface: #f6f6f6; --border: #e0e0e0; --text: #111;
-        --muted: #777; --accent: #1a1a1a; --danger: #c0392b; --radius: 4px; }
-@media (prefers-color-scheme: dark) {
-    :root { --bg: #0f0f0f; --surface: #1a1a1a; --border: #2a2a2a; --text: #eee;
-            --muted: #888; --accent: #eee; }
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif;
-       display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-form { display: flex; flex-direction: column; gap: .6rem; width: 260px; }
-input { padding: .4rem .6rem; background: var(--surface); border: 1px solid var(--border);
-        border-radius: var(--radius); color: var(--text); font-size: .9rem; }
-input:focus { outline: 2px solid var(--accent); border-color: transparent; }
-button { background: var(--accent); color: var(--bg); border: none; padding: .4rem 1rem;
-         border-radius: var(--radius); cursor: pointer; font-size: .9rem; }
-.err { font-size: .8rem; color: var(--danger); }
-</style>
-</head>
-<body>
-<form method="post" action="">
-  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token'] ?? '') ?>">
-  <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
-  <?php if (isset($_GET['error'])): ?>
-  <p class="err">wrong password</p>
-  <?php endif; ?>
-  <button type="submit">login</button>
-</form>
+    \SUFI\Templates\theme_head('sufi — the door');
+?><body class="gate">
+<div class="gate-card">
+  <div class="kicker">
+    <span>sufi</span>
+    <span><?= date('j M Y') ?></span>
+  </div>
+  <h1 class="nameplate">sufi</h1>
+  <p class="epigraph"><?= htmlspecialchars(\SUFI\Templates\theme_epigraph()) ?></p>
+  <form method="post" action="">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token'] ?? '') ?>">
+    <label class="field">
+      <span>password</span>
+      <input type="password" name="password" autofocus autocomplete="current-password">
+    </label>
+    <?php if (isset($_GET['error'])): ?>
+    <p class="err">that is not the word. try again.</p>
+    <?php endif; ?>
+    <button class="btn primary" type="submit">knock</button>
+  </form>
+  <p class="note center" style="margin-top:1.1rem">One person runs this instance.<br>
+    If that person is you, you know the word.</p>
+</div>
 </body>
 </html>
 <?php
 return;
 endif;
-?><!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>@<?= $username ?>@<?= $server ?></title>
-<style>
-:root {
-    --bg:      #fff;
-    --surface: #f6f6f6;
-    --border:  #e0e0e0;
-    --text:    #111;
-    --muted:   #777;
-    --accent:  #1a1a1a;
-    --danger:  #c0392b;
-    --radius:  4px;
-    --mono:    ui-monospace, "Cascadia Code", "Fira Mono", monospace;
-}
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg:      #0f0f0f;
-        --surface: #1a1a1a;
-        --border:  #2a2a2a;
-        --text:    #eee;
-        --muted:   #888;
-        --accent:  #eee;
-    }
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
 
-#app { max-width: 680px; margin: 0 auto; padding: 1rem; }
+$post_count      = \SUFI\System\Database\count_posts($db_handler);
+$follower_count  = \SUFI\System\Database\count_followers($db_handler);
+$following_count = \SUFI\System\Database\count_following($db_handler);
 
-header { display: flex; justify-content: space-between; align-items: center;
-    padding-bottom: .75rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
-header h1 { font-size: .9rem; font-family: var(--mono); color: var(--muted); font-weight: 400; }
-header button { font-size: .8rem; background: none; border: 1px solid var(--border);
-    color: var(--muted); padding: .2rem .6rem; cursor: pointer; border-radius: var(--radius); }
-
-#compose { margin-bottom: 1.5rem; }
-#compose textarea { width: 100%; min-height: 80px; padding: .6rem .75rem;
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    color: var(--text); font: 15px/1.5 var(--mono); resize: vertical; }
-#compose textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
-.compose-footer { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; flex-wrap: wrap; }
-.compose-footer input { flex: 1; min-width: 160px; padding: .35rem .6rem;
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    color: var(--muted); font-size: .85rem; }
-.compose-footer input:focus { outline: 2px solid var(--accent); border-color: transparent; color: var(--text); }
-.compose-footer input::placeholder { color: var(--muted); }
-#charcount { font-size: .8rem; color: var(--muted); margin-left: auto; }
-
-button.primary { background: var(--accent); color: var(--bg); border: none;
-    padding: .4rem 1rem; border-radius: var(--radius); cursor: pointer; font-size: .9rem; }
-button.primary:disabled { opacity: .4; cursor: default; }
-button.ghost  { background: none; border: 1px solid var(--border); color: var(--muted);
-    padding: .25rem .6rem; border-radius: var(--radius); cursor: pointer; font-size: .8rem; }
-button.ghost:hover { color: var(--text); border-color: var(--text); }
-button.danger { background: none; border: 1px solid var(--border); color: var(--danger);
-    padding: .25rem .6rem; border-radius: var(--radius); cursor: pointer; font-size: .8rem; }
-
-.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
-.tab  { padding: .5rem 1rem; cursor: pointer; font-size: .9rem; color: var(--muted);
-    border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; border-top: none;
-    border-left: none; border-right: none; }
-.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-
-.item { padding: .75rem 0; border-bottom: 1px solid var(--border); }
-.item:last-child { border-bottom: none; }
-.item-meta  { font-size: .8rem; color: var(--muted); margin-bottom: .25rem; display: flex; gap: .75rem; }
-.item-body  { font-family: var(--mono); font-size: .9rem; white-space: pre-wrap; word-break: break-word; }
-.item-actions { margin-top: .4rem; display: flex; gap: .4rem; }
-.item-edit  { margin-top: .5rem; }
-.item-edit textarea { width: 100%; padding: .5rem; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius);
-    color: var(--text); font: 14px/1.4 var(--mono); resize: vertical; }
-.type-icon { font-size: 1rem; }
-
-.follow-form { display: flex; gap: .5rem; margin-bottom: 1rem; }
-.follow-form input { flex: 1; padding: .4rem .6rem; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .9rem; }
-.section-label { font-size: .8rem; color: var(--muted); margin: .75rem 0 .25rem; text-transform: uppercase;
-    letter-spacing: .06em; }
-.person { display: flex; justify-content: space-between; align-items: center;
-    padding: .4rem 0; border-bottom: 1px solid var(--border); font-size: .85rem;
-    font-family: var(--mono); }
-.person a { color: var(--text); text-decoration: none; }
-.person a:hover { text-decoration: underline; }
-.pname { color: var(--muted); margin-left: .4rem; font-family: system-ui, sans-serif; }
-.kind { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-.inbox-toolbar { display: flex; justify-content: flex-end; margin-bottom: .5rem; }
-.thread { margin-top: .5rem; border-left: 2px solid var(--border); padding-left: .75rem; }
-.thread .item-body { color: var(--muted); }
-
-#status { font-size: .8rem; color: var(--muted); min-height: 1.2rem; margin-top: .25rem; }
-.attach-row { display: flex; gap: .5rem; align-items: center; margin-top: .4rem; font-size: .8rem; }
-.attach-row input[type=text] { flex: 1; padding: .3rem .5rem; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .8rem; }
-.attach-row input[type=file] { color: var(--muted); font-size: .75rem; max-width: 45%; }
-.attach-row select { padding: .3rem .5rem; background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); color: var(--text); font-size: .8rem; }
-#attach-preview img { max-height: 60px; border-radius: var(--radius); display: block; }
-.attach-item { display: flex; gap: .5rem; align-items: center; margin-top: .4rem; }
-.attach-item input[type=text] { flex: 1; padding: .3rem .5rem; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .8rem; }
-.profile-form { display: flex; flex-direction: column; gap: .5rem; max-width: 420px; }
-.profile-form label { font-size: .8rem; color: var(--muted); }
-.profile-form input, .profile-form textarea { padding: .4rem .6rem; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: .85rem; }
-.profile-form textarea { resize: vertical; min-height: 80px; }
-.empty  { color: var(--muted); font-size: .9rem; padding: 1rem 0; }
-</style>
-</head>
-<body>
+\SUFI\Templates\theme_head('@' . $username . '@' . $server);
+?><body>
 <div id="app">
-  <header>
-    <h1>@<?= $username ?>@<?= $server ?></h1>
-    <a href="?logout=1"><button>logout</button></a>
+  <header class="masthead">
+    <div class="kicker">
+      <span>single-user fediverse</span>
+      <span><?= date('l · j F Y') ?></span>
+    </div>
+    <div class="masthead-row">
+      <div>
+        <div class="nameplate"><a href="<?= htmlspecialchars($base_url) ?>">sufi</a></div>
+        <div class="handle">@<?= htmlspecialchars($username) ?>@<?= htmlspecialchars($server) ?>
+          · <?= $post_count ?> <?= $post_count === 1 ? 'entry' : 'entries' ?>
+          · <?= $following_count ?> following
+          · <?= $follower_count ?> <?= $follower_count === 1 ? 'follower' : 'followers' ?>
+        </div>
+      </div>
+      <a class="btn ghost small" href="?logout=1">logout</a>
+    </div>
+    <p class="epigraph"><?= htmlspecialchars(\SUFI\Templates\theme_epigraph()) ?></p>
   </header>
 
-  <div id="compose">
-    <textarea id="content" placeholder="what's on your mind?" oninput="countChars()"></textarea>
-    <div class="compose-footer">
-      <input id="reply" type="url" placeholder="reply to (optional URL)">
-      <span id="charcount"></span>
-      <button class="primary" onclick="post()">Post</button>
+  <section id="compose">
+    <div class="eyebrow">new entry</div>
+    <div class="sheet">
+      <textarea id="content" placeholder="What happened, what are you thinking…"
+                oninput="countChars()" aria-label="entry text"></textarea>
+      <div class="compose-foot">
+        <input id="reply" type="url" placeholder="replying to a URL (optional)" aria-label="reply to">
+        <span class="meter" id="meter" aria-hidden="true"></span>
+        <span id="charcount"></span>
+        <button class="btn primary" id="post-btn" onclick="post()">post</button>
+      </div>
+      <div class="attach-grid">
+        <label class="field">
+          <span>visibility</span>
+          <select id="visibility">
+            <option value="public">public — anyone</option>
+            <option value="unlisted">unlisted — quiet public</option>
+            <option value="private">followers only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>content warning</span>
+          <input type="text" id="cw" placeholder="spoilers, politics, food…">
+        </label>
+      </div>
+      <div class="attach-row">
+        <input type="file" id="image" multiple accept="image/jpeg,image/png,image/gif,image/webp"
+               onchange="attachImages()" aria-label="attach images">
+        <span class="kind">up to four images</span>
+        <span class="note" style="margin-left:auto">⌘ / ctrl + enter</span>
+      </div>
+      <div id="attach-preview"></div>
     </div>
-    <div class="attach-row">
-      <select id="visibility">
-        <option value="public">public</option>
-        <option value="unlisted">unlisted</option>
-        <option value="private">followers only</option>
-      </select>
-      <input type="text" id="cw" placeholder="content warning (optional)">
-    </div>
-    <div class="attach-row">
-      <input type="file" id="image" multiple accept="image/jpeg,image/png,image/gif,image/webp" onchange="attachImages()">
-      <span class="kind">up to 4 images</span>
-    </div>
-    <div id="attach-preview"></div>
-    <div id="status"></div>
-  </div>
+    <div id="status" role="status" aria-live="polite"></div>
+  </section>
 
-  <div class="tabs">
-    <button class="tab active" onclick="switchTab('posts', this)">Posts</button>
-    <button class="tab"        id="tab-inbox" onclick="switchTab('inbox', this)">inbox</button>
-    <button class="tab"        onclick="switchTab('people', this)">People</button>
-    <button class="tab"        onclick="switchTab('profile', this)">Profile</button>
-  </div>
+  <nav class="tabs" aria-label="panel sections">
+    <button class="tab active" onclick="switchTab('posts', this)">entries</button>
+    <button class="tab" id="tab-inbox" onclick="switchTab('inbox', this)">inbox</button>
+    <button class="tab" onclick="switchTab('people', this)">people</button>
+    <button class="tab" onclick="switchTab('profile', this)">profile</button>
+  </nav>
 
   <div id="panel-posts">
-    <div class="empty">loading...</div>
+    <div class="empty">opening the notebook…</div>
   </div>
-  <div id="panel-inbox"  style="display:none"><div class="empty">loading...</div></div>
-  <div id="panel-people" style="display:none"><div class="empty">loading...</div></div>
+  <div id="panel-inbox" style="display:none"><div class="empty">opening the notebook…</div></div>
+  <div id="panel-people" style="display:none"><div class="empty">opening the notebook…</div></div>
   <div id="panel-profile" style="display:none">
-    <div class="profile-form">
-      <label for="profile-name">display name</label>
-      <input id="profile-name" value="<?= htmlspecialchars($user_data['name'] ?? $username) ?>">
-      <label for="profile-summary">bio</label>
-      <textarea id="profile-summary"><?= htmlspecialchars($user_data['summary'] ?? '') ?></textarea>
-      <label for="profile-icon">avatar URL</label>
-      <input id="profile-icon" type="url" value="<?= htmlspecialchars($user_data['icon'] ?? '') ?>">
-      <div><button class="primary" onclick="saveProfile()">save profile</button></div>
+    <div class="eyebrow">the name on the door</div>
+    <div class="sheet">
+      <div class="stack" style="max-width:26rem">
+        <label class="field">
+          <span>display name</span>
+          <input id="profile-name" value="<?= htmlspecialchars($user_data['name'] ?? $username) ?>">
+        </label>
+        <label class="field">
+          <span>bio</span>
+          <textarea id="profile-summary" rows="4"><?= htmlspecialchars($user_data['summary'] ?? '') ?></textarea>
+        </label>
+        <label class="field">
+          <span>avatar URL</span>
+          <input id="profile-icon" type="url" value="<?= htmlspecialchars($user_data['icon'] ?? '') ?>">
+        </label>
+        <div><button class="btn primary" onclick="saveProfile()">save profile</button></div>
+      </div>
     </div>
   </div>
+
+  <footer class="colophon">
+    <span>SUFI — single user fediverse</span>
+    <span>no trackers · no build step · no dependencies</span>
+  </footer>
 </div>
+
+<style>
+#compose { margin-bottom: 2rem; }
+
+#compose textarea {
+    display: block;
+    width: 100%;
+    min-height: 8.4rem;
+    resize: vertical;
+    padding: 0;
+    border: none;
+    outline: none;
+    background-color: transparent;
+    color: var(--ink);
+    font: 1.02rem/1.9rem var(--serif);
+    background-image: repeating-linear-gradient(
+        180deg, transparent 0 calc(1.9rem - 1px), var(--rule) calc(1.9rem - 1px) 1.9rem);
+    background-attachment: local;
+}
+#compose textarea::placeholder { font-style: italic; color: var(--ink-soft); }
+
+.compose-foot {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    flex-wrap: wrap;
+    margin-top: .7rem;
+    padding-top: .7rem;
+    border-top: 1px dashed var(--rule);
+}
+.compose-foot #reply { flex: 1; min-width: 11rem; }
+#post-btn { margin-left: auto; }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 4px; height: 11px; background: var(--rule); }
+.meter i.on { background: var(--ink); }
+.meter.over i.on { background: var(--stamp); }
+#charcount { font: .68rem/1.5 var(--mono); color: var(--ink-soft); }
+
+.attach-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .7rem;
+    margin-top: .8rem;
+}
+@media (max-width: 560px) { .attach-grid { grid-template-columns: 1fr; } }
+
+.attach-row {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    flex-wrap: wrap;
+    margin-top: .7rem;
+    font-size: .8rem;
+}
+.attach-row input[type=file] {
+    font: .68rem/1.5 var(--mono);
+    color: var(--ink-soft);
+    max-width: 100%;
+}
+.attach-row input[type=file]::file-selector-button {
+    font: 600 .62rem/1.5 var(--sans);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--ink);
+    background: var(--paper-3);
+    border: 1px solid var(--rule);
+    padding: .3rem .55rem;
+    margin-right: .55rem;
+    cursor: pointer;
+}
+
+#attach-preview { margin-top: .5rem; }
+.attach-item {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    margin-top: .5rem;
+}
+.attach-item img {
+    width: 3.2rem;
+    height: 3.2rem;
+    object-fit: cover;
+    border: 1px solid var(--rule);
+    display: block;
+}
+.attach-item input[type=text] { flex: 1; }
+
+#status { font: .72rem/1.6 var(--mono); color: var(--ink-soft); min-height: 1.3rem; margin-top: .55rem; }
+
+#panel-posts .entry-body .post-text { white-space: pre-wrap; }
+.entry-edit { margin-top: .6rem; }
+.entry-edit textarea {
+    width: 100%;
+    padding: .5rem;
+    border: 1px solid var(--rule);
+    background: var(--paper-3);
+    color: var(--ink);
+    font: .95rem/1.6 var(--serif);
+    resize: vertical;
+}
+
+.inbox-toolbar { display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .8rem; }
+.letter {
+    position: relative;
+    background: var(--paper-3);
+    border: 1px solid var(--rule);
+    box-shadow: 1px 1px 0 var(--hair);
+    padding: .85rem 1rem .75rem;
+    margin-bottom: .85rem;
+}
+.letter.unread { border-left: 3px solid var(--stamp); }
+.letter-head {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    flex-wrap: wrap;
+    font: .68rem/1.5 var(--mono);
+    color: var(--ink-soft);
+}
+.stamp {
+    font: 700 .56rem/1.6 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--stamp);
+    border: 1px solid var(--stamp);
+    padding: 0 .35rem;
+    transform: rotate(-2deg);
+}
+.who { font-family: var(--mono); color: var(--ink); text-decoration: none; }
+.who:hover { text-decoration: underline; }
+.letter-body {
+    font-size: .95rem;
+    line-height: 1.6;
+    margin-top: .45rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.letter-body.muted { font-style: italic; }
+.letter-actions { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .55rem; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--stamp); }
+.thread { margin-top: .7rem; padding-left: .8rem; border-left: 2px solid var(--rule); }
+.thread-post { padding: .35rem 0; }
+.thread-post .kind { display: block; margin-bottom: .2rem; }
+
+.follow-form { margin-bottom: .4rem; }
+.directory { margin-bottom: 1.5rem; }
+.person {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    flex-wrap: wrap;
+    padding: .5rem 0;
+    border-bottom: 1px dotted var(--rule);
+    font: .82rem/1.6 var(--mono);
+}
+.person .pname { font-family: var(--serif); font-size: .9rem; color: var(--ink-soft); margin-left: .5rem; }
+.person .actions { display: flex; gap: .3rem; flex-wrap: wrap; }
+
+#panel-profile textarea {
+    padding: .5rem .55rem;
+    border: 1px solid var(--rule);
+    background: var(--paper-3);
+    color: var(--ink);
+    font: .95rem/1.6 var(--serif);
+    resize: vertical;
+}
+</style>
 
 <script>
 const BASE = <?= json_encode(rtrim($base_url, '/')) ?>;
@@ -224,10 +316,49 @@ let attachments = [];
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Escape first, then decorate the resulting safe text.
+function rich(text) {
+    let out = esc(text);
+    out = out.replace(/(https?:\/\/[^\s<]+)/g,
+        url => `<a href="${url}" target="_blank" rel="noopener noreferrer nofollow">${url}</a>`);
+    out = out.replace(/(^|[\s(])(#[\p{L}\p{N}_]{1,64})/gu, (m, pre, tag) =>
+        `${pre}<a class="hashtag" href="${BASE}/tags/${encodeURIComponent(tag.slice(1).toLowerCase())}">${tag}</a>`);
+    return out;
+}
+
+function ago(value) {
+    const then = parseWhen(value);
+    if (Number.isNaN(then)) return String(value || '').slice(0, 10);
+    const secs = Math.max(0, (Date.now() - then) / 1000);
+    if (secs < 90) return 'just now';
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+    const days = Math.round(hours / 24);
+    if (days < 30) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+    return new Date(then).toLocaleDateString(undefined,
+        { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// SQLite datetimes are UTC but carry no suffix; ActivityStreams ones do.
+function parseWhen(value) {
+    let text = String(value || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text) && !/(Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+        text = text.replace(' ', 'T') + 'Z';
+    }
+    return Date.parse(text);
+}
+
+function fullDate(value) {
+    const then = parseWhen(value);
+    return Number.isNaN(then) ? '' : new Date(then).toLocaleString();
+}
+
 function setStatus(msg, ok = true) {
     const el = document.getElementById('status');
     el.textContent = msg;
-    el.style.color = ok ? 'var(--muted)' : 'var(--danger)';
+    el.style.color = ok ? '' : 'var(--stamp)';
     if (msg) setTimeout(() => el.textContent = '', 3000);
 }
 
@@ -251,22 +382,29 @@ async function api(path, data) {
     return r;
 }
 
+const METER_BLOCKS = 25;
+
 function countChars() {
     const n = document.getElementById('content').value.length;
+    const meter = document.getElementById('meter');
+    const filled = Math.min(METER_BLOCKS, Math.ceil(n / MAX_CHARS * METER_BLOCKS));
+    meter.innerHTML = Array.from({ length: METER_BLOCKS },
+        (_, i) => `<i class="${i < filled ? 'on' : ''}"></i>`).join('');
+    meter.classList.toggle('over', n > MAX_CHARS);
     const el = document.getElementById('charcount');
     el.textContent = n > 0 ? `${n}/${MAX_CHARS}` : '';
-    el.style.color = n > MAX_CHARS ? 'var(--danger)' : 'var(--muted)';
+    el.style.color = n > MAX_CHARS ? 'var(--stamp)' : '';
 }
 
 async function attachImages() {
     const input = document.getElementById('image');
 
     for (const file of input.files) {
-        if (attachments.length >= 4) { setStatus('up to 4 images', false); break; }
+        if (attachments.length >= 4) { setStatus('four images is the limit', false); break; }
 
         const form = new FormData();
         form.append('file', file);
-        setStatus('uploading...');
+        setStatus('uploading…');
 
         const r = await fetch(`${BASE}/ap/upload`, {
             method: 'POST',
@@ -291,8 +429,8 @@ function renderAttachments() {
         <div class="attach-item">
             <img src="${esc(a.thumb)}" alt="">
             <input type="text" placeholder="alt text" value="${esc(a.description)}"
-                   oninput="attachments[${i}].description=this.value">
-            <button class="ghost" onclick="removeAttachment(${i})">remove</button>
+                   aria-label="alt text" oninput="attachments[${i}].description=this.value">
+            <button class="btn ghost small" onclick="removeAttachment(${i})">remove</button>
         </div>`).join('');
 }
 
@@ -311,10 +449,10 @@ async function post() {
     const content  = document.getElementById('content').value.trim();
     const in_reply = document.getElementById('reply').value.trim();
     if (!content && !attachments.length) return;
-    if (content.length > MAX_CHARS) { setStatus('too long', false); return; }
-    const btn = document.querySelector('button.primary');
+    if (content.length > MAX_CHARS) { setStatus('too long — trim it down', false); return; }
+    const btn = document.getElementById('post-btn');
     btn.disabled = true;
-    setStatus('posting...');
+    setStatus('posting…');
     const visibility = document.getElementById('visibility').value;
     const spoiler    = document.getElementById('cw').value.trim();
     const data = { content, visibility };
@@ -337,36 +475,43 @@ async function post() {
         setStatus('posted');
         loadPosts();
     } else {
-        setStatus('error', false);
+        setStatus('could not post that', false);
     }
 }
 
 async function loadPosts() {
     const panel = document.getElementById('panel-posts');
     const posts = await get('/ap/post');
-    if (!posts || !posts.length) { panel.innerHTML = '<div class="empty">no posts yet</div>'; return; }
+    if (!posts || !posts.length) {
+        panel.innerHTML = '<div class="empty">The notebook is empty. Write the first entry.</div>';
+        return;
+    }
     panel.innerHTML = posts.map(p => {
-        const guid    = p.guid;
-        const content = esc(p.content);
-        const date    = p.published ? p.published.slice(0, 10) : '';
-        const vis     = p.visibility && p.visibility !== 'public'
+        const guid  = p.guid;
+        const vis   = p.visibility && p.visibility !== 'public'
             ? `<span class="kind">${esc(p.visibility)}</span>` : '';
-        const cw      = p.summary ? `<span class="kind">cw: ${esc(p.summary)}</span>` : '';
-        return `<div class="item" id="post-${guid}">
-            <div class="item-meta"><span>${date}</span>${vis}${cw}</div>
-            <div class="item-body">${content}</div>
-            <div class="item-actions">
-                <button class="ghost" onclick="startEdit('${guid}')">edit</button>
-                <button class="danger" onclick="deletePost('${guid}')">delete</button>
+        const cw    = p.summary ? `<span class="kind">cw · ${esc(p.summary)}</span>` : '';
+        const reply = p.in_reply ? '<span class="kind">↳ reply</span>' : '';
+        return `<article class="entry" id="post-${guid}">
+            <div class="entry-meta">
+                <time datetime="${esc(p.published || '')}" title="${esc(fullDate(p.published))}">${esc(ago(p.published))}</time>
+                ${vis}${cw}${reply}
             </div>
-            <div class="item-edit" id="edit-${guid}" style="display:none">
-                <textarea rows="3">${esc(p.content)}</textarea>
-                <div class="item-actions">
-                    <button class="primary" onclick="saveEdit('${guid}')">save</button>
-                    <button class="ghost"   onclick="cancelEdit('${guid}')">cancel</button>
+            <div class="entry-body">
+                <div class="post-text">${rich(p.content)}</div>
+                <div class="entry-actions">
+                    <button class="btn ghost small" onclick="startEdit('${guid}')">edit</button>
+                    <button class="btn danger small" onclick="deletePost('${guid}')">delete</button>
+                </div>
+                <div class="entry-edit" id="edit-${guid}" style="display:none">
+                    <textarea rows="3">${esc(p.content)}</textarea>
+                    <div class="entry-actions">
+                        <button class="btn primary small" onclick="saveEdit('${guid}')">save</button>
+                        <button class="btn ghost small" onclick="cancelEdit('${guid}')">cancel</button>
+                    </div>
                 </div>
             </div>
-        </div>`;
+        </article>`;
     }).join('');
 }
 
@@ -381,13 +526,13 @@ async function saveEdit(guid) {
     if (!content) return;
     const r = await api(`/ap/post/${guid}`, { action: 'update', content });
     if (r.ok) { setStatus('updated'); loadPosts(); }
-    else { setStatus('error', false); }
+    else { setStatus('could not save that', false); }
 }
 async function deletePost(guid) {
-    if (!confirm('delete this post?')) return;
+    if (!confirm('Delete this entry? It disappears from other servers too.')) return;
     const r = await api(`/ap/post/${guid}`, { action: 'delete' });
     if (r.ok) { document.getElementById(`post-${guid}`)?.remove(); setStatus('deleted'); }
-    else { setStatus('error', false); }
+    else { setStatus('could not delete that', false); }
 }
 
 const inboxById = new Map();
@@ -395,7 +540,7 @@ let inboxCursor = null;
 let inboxUnread = 0;
 
 const inboxLabels = { like: 'like', boost: 'boost', reply: 'reply', mention: 'mention', post: 'post', other: 'activity' };
-const inboxIcons  = { like: '♥', boost: '↻', reply: '💬', mention: '@', post: '•', other: '•' };
+const inboxIcons  = { like: '♥', boost: '↻', reply: '✎', mention: '@', post: '•', other: '•' };
 
 function updateInboxBadge() {
     document.getElementById('tab-inbox').textContent = inboxUnread ? `inbox (${inboxUnread})` : 'inbox';
@@ -405,31 +550,37 @@ function renderInboxItem(item) {
     const icon   = inboxIcons[item.kind] || '•';
     const label  = inboxLabels[item.kind] || 'activity';
     const actor  = item.actor_uri || '';
-    const handle = item.actor_handle || esc(actor.replace(/https?:\/\//, ''));
-    const date   = (item.created_at || '').slice(0, 16).replace(' ', ' · ');
-    const unread = item.is_read ? '' : `<span class="dot" data-dot="${item.id}"></span>`;
+    const handle = esc(item.actor_handle || actor.replace(/^https?:\/\//, ''));
+    const unread = item.is_read ? '' : `<span class="dot" data-dot="${item.id}" title="unread"></span>`;
 
     const buttons = [];
-    if (item.reply_to) buttons.push(`<button class="ghost" data-thread="${item.id}">thread</button>`);
+    if (item.reply_to) buttons.push(`<button class="btn ghost small" data-thread="${item.id}">thread</button>`);
     if (item.kind === 'reply' || item.kind === 'mention') {
-        buttons.push(`<button class="ghost" data-reply="${item.object_uri || ''}">reply</button>`);
+        buttons.push(`<button class="btn ghost small" data-reply="${esc(item.object_uri || '')}">reply</button>`);
     }
-    if (!item.is_read) buttons.push(`<button class="ghost" data-read="${item.id}">mark read</button>`);
-    buttons.push(`<button class="ghost" data-delete="${item.id}">delete</button>`);
-    if (item.object_uri) buttons.push(`<a href="${esc(item.object_uri)}" target="_blank" style="color:var(--muted)">open</a>`);
+    if (!item.is_read) buttons.push(`<button class="btn ghost small" data-read="${item.id}">mark read</button>`);
+    buttons.push(`<button class="btn ghost small" data-delete="${item.id}">delete</button>`);
+    if (item.object_uri) {
+        buttons.push(`<a class="btn ghost small" href="${esc(item.object_uri)}" target="_blank" rel="noopener noreferrer">open</a>`);
+    }
 
-    return `<div class="item" id="inbox-${item.id}">
-        <div class="item-meta">
-            <span class="type-icon">${icon}</span>
-            <span class="kind">${label}</span>
-            <a href="${esc(actor)}" target="_blank" style="color:var(--muted)">${handle}</a>
-            <span>${date}</span>
+    // Likes and boosts carry no text of their own; say what happened.
+    const quiet = { like: 'liked one of your entries.', boost: 'boosted one of your entries.' };
+    const body = item.preview
+        ? `<div class="letter-body">${rich(item.preview)}</div>`
+        : (quiet[item.kind] ? `<div class="letter-body muted">${esc(quiet[item.kind])}</div>` : '');
+
+    return `<article class="letter${item.is_read ? '' : ' unread'}" id="inbox-${item.id}">
+        <div class="letter-head">
+            <span class="stamp" aria-hidden="true">${icon} ${esc(label)}</span>
+            <a class="who" href="${esc(actor)}" target="_blank" rel="noopener noreferrer">${handle}</a>
+            <time datetime="${esc(item.created_at || '')}" title="${esc(fullDate(item.created_at))}">${esc(ago(item.created_at))}</time>
             ${unread}
-            ${buttons.join(' ')}
         </div>
-        ${item.preview ? `<div class="item-body">${esc(item.preview)}</div>` : ''}
+        ${body}
+        <div class="letter-actions">${buttons.join(' ')}</div>
         <div class="thread" id="thread-${item.id}" style="display:none"></div>
-    </div>`;
+    </article>`;
 }
 
 async function loadInbox(reset = true) {
@@ -438,7 +589,7 @@ async function loadInbox(reset = true) {
     if (reset) {
         inboxById.clear();
         inboxCursor = null;
-        panel.innerHTML = '<div class="empty">loading...</div>';
+        panel.innerHTML = '<div class="empty">opening the notebook…</div>';
     }
 
     let url = '/ap/inbox?limit=20';
@@ -457,10 +608,10 @@ async function loadInbox(reset = true) {
 
     if (reset) {
         panel.innerHTML = '<div class="inbox-toolbar">'
-            + '<button class="ghost" onclick="clearReadInbox()">clear read</button>'
-            + (inboxUnread ? '<button class="ghost" onclick="markAllRead()">mark all read</button>' : '')
+            + '<button class="btn ghost small" onclick="clearReadInbox()">clear read</button>'
+            + (inboxUnread ? '<button class="btn ghost small" onclick="markAllRead()">mark all read</button>' : '')
             + '</div>'
-            + (page.items.length ? '' : '<div class="empty">inbox empty</div>')
+            + (page.items.length ? '' : '<div class="empty">No letters. Quiet is fine.</div>')
             + html;
     } else {
         document.getElementById('inbox-more')?.remove();
@@ -469,7 +620,8 @@ async function loadInbox(reset = true) {
 
     inboxCursor = page.next_before_id;
     if (inboxCursor) {
-        panel.insertAdjacentHTML('beforeend', '<button id="inbox-more" class="ghost" style="margin-top:.5rem">load more</button>');
+        panel.insertAdjacentHTML('beforeend',
+            '<button id="inbox-more" class="btn ghost small" style="margin-top:.75rem">load more</button>');
     }
 
     panel.querySelectorAll('[data-reply]').forEach(b => {
@@ -505,6 +657,7 @@ async function markRead(id) {
     inboxById.get(id).is_read = 1;
     document.querySelector(`[data-dot="${id}"]`)?.remove();
     document.querySelector(`[data-read="${id}"]`)?.remove();
+    document.getElementById(`inbox-${id}`)?.classList.remove('unread');
 }
 
 async function deleteInboxItem(id) {
@@ -519,7 +672,7 @@ async function deleteInboxItem(id) {
 }
 
 async function clearReadInbox() {
-    if (!confirm('delete every inbox item you have already read?')) return;
+    if (!confirm('Delete every inbox item you have already read?')) return;
     const r = await api('/ap/inbox/delete', { id: 'read' });
     if (!r.ok) return;
     const body = await r.json();
@@ -542,6 +695,7 @@ async function markAllRead() {
     inboxById.forEach(i => { i.is_read = 1; });
     document.querySelectorAll('.dot, [data-read]').forEach(el => el.remove());
     document.querySelectorAll('.inbox-toolbar').forEach(el => el.remove());
+    document.querySelectorAll('.letter.unread').forEach(el => el.classList.remove('unread'));
     setStatus('inbox marked read');
 }
 
@@ -564,15 +718,16 @@ async function toggleThread(id) {
     if (item.reply_to.startsWith(BASE + '/ap/post/')) {
         try {
             const note = await fetch(item.reply_to, { headers: { Accept: 'application/activity+json' } }).then(r => r.json());
-            parent = `<div class="item">
-                <div class="item-meta"><span class="kind">your post</span>
-                    <a href="${esc(note.id)}" target="_blank" style="color:var(--muted)">open</a></div>
-                <div class="item-body">${threadBody(note.content)}</div>
-            </div>`;
+            parent = note && note.content
+                ? `<div class="thread-post">
+                    <span class="kind">your entry · <a href="${esc(note.id || item.reply_to)}" target="_blank" rel="noopener noreferrer">open</a></span>
+                    <div class="entry-body">${threadBody(note.content)}</div>
+                </div>`
+                : `<div class="thread-post"><span class="kind">your entry · <a href="${esc(item.reply_to)}" target="_blank" rel="noopener noreferrer">open</a></span></div>`;
         } catch (e) { /* parent is gone or unreachable */ }
     } else {
-        parent = `<div class="item-meta">replying to
-            <a href="${esc(item.reply_to)}" target="_blank">${esc(item.reply_to)}</a></div>`;
+        parent = `<div class="thread-post"><span class="kind">replying to</span>
+            <a href="${esc(item.reply_to)}" target="_blank" rel="noopener noreferrer">${esc(item.reply_to)}</a></div>`;
     }
 
     box.innerHTML = parent;
@@ -592,7 +747,7 @@ async function saveProfile() {
         summary: document.getElementById('profile-summary').value,
         icon: document.getElementById('profile-icon').value
     });
-    setStatus(r.ok ? 'profile saved' : 'error', r.ok);
+    setStatus(r.ok ? 'profile saved' : 'could not save the profile', r.ok);
 }
 
 async function loadPeople() {
@@ -600,33 +755,38 @@ async function loadPeople() {
     const people = await get('/ap/people');
     if (!people) return;
 
-    const followInput = `
-        <div class="follow-form">
-            <input id="follow-input" type="text" placeholder="@user@server.social">
-            <button class="primary" onclick="followUser()">Follow</button>
-        </div>`;
-
     const renderList = (items, actions) => {
-        if (!items.length) return '<div class="empty">none</div>';
+        if (!items.length) return '<div class="empty">Nobody here yet.</div>';
         return items.map(p => {
             const name = p.name ? `<span class="pname">${esc(p.name)}</span>` : '';
             const btns = (actions || []).map(([label, attr, cls]) =>
-                `<button class="${cls}" data-${attr}="${esc(p.uri)}">${label}</button>`).join('');
+                `<button class="btn ${cls} small" data-${attr}="${esc(p.uri)}">${label}</button>`).join('');
             return `<div class="person">
-                <span><a href="${esc(p.url)}" target="_blank">${esc(p.handle)}</a>${name}</span>
-                <span>${btns}</span>
+                <span class="person-id"><a class="who" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.handle)}</a>${name}</span>
+                <span class="actions">${btns}</span>
             </div>`;
         }).join('');
     };
 
     panel.innerHTML = `
-        ${followInput}
-        <div class="section-label">following (${people.following.length})</div>
+        <div class="eyebrow">follow someone</div>
+        <div class="row follow-form">
+            <input id="follow-input" type="text" placeholder="@user@server.social"
+                   style="flex:1;min-width:12rem" aria-label="handle to follow">
+            <button class="btn primary" onclick="followUser()">follow</button>
+        </div>
+        <div class="eyebrow" style="margin-top:1.8rem">following · ${people.following.length}</div>
+        <div class="directory">
         ${renderList(people.following, [['unfollow', 'unfollow', 'ghost'], ['block', 'block', 'danger']])}
-        <div class="section-label">followers (${people.followers.length})</div>
+        </div>
+        <div class="eyebrow">followers · ${people.followers.length}</div>
+        <div class="directory">
         ${renderList(people.followers, [['block', 'block', 'danger']])}
-        <div class="section-label">blocked (${people.blocked.length})</div>
+        </div>
+        <div class="eyebrow">blocked · ${people.blocked.length}</div>
+        <div class="directory">
         ${renderList(people.blocked, [['unblock', 'unblock', 'ghost']])}
+        </div>
     `;
 
     // URIs live in data attributes, not inline JS, so remote values cannot break out.
@@ -654,7 +814,7 @@ async function unfollowUser(uri) {
 }
 
 async function blockUser(uri) {
-    if (!confirm('block this actor? Their posts stop arriving and they are removed from your followers.')) return;
+    if (!confirm('Block this actor? Their posts stop arriving and they are removed from your followers.')) return;
     const r = await api('/ap/action', { user: uri, action: 'Block' });
     const msg = await r.text();
     setStatus(msg, r.ok);
@@ -679,6 +839,14 @@ function switchTab(name, btn) {
     loaders[name]();
 }
 
+document.getElementById('content').addEventListener('keydown', event => {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        post();
+    }
+});
+
+countChars();
 loadPosts();
 </script>
 </body>

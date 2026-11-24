@@ -264,7 +264,7 @@ function oldest_post_id($DBH) {
 
 function posts_with_tag($DBH, $tag, $limit = 50) {
     return get($DBH,
-        "SELECT * FROM Post WHERE content LIKE ? ORDER BY id DESC LIMIT ?",
+        "SELECT * FROM Post WHERE content LIKE ? ORDER BY published DESC LIMIT ?",
         ['%#' . $tag . '%', (int) $limit]
     );
 }
