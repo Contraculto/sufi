@@ -407,6 +407,9 @@ check('panel rendered', true, str_contains($r[2], 'id="compose"'));
 check('panel BASE is instance root', true, str_contains($r[2], 'const BASE = ' . json_encode($instance)));
 $csrf = token($r[2]);
 check('panel exposes csrf token', true, $csrf !== null);
+check('every tab button has an id', true,
+    str_contains($r[2], 'id="tab-posts"') && str_contains($r[2], 'id="tab-inbox"')
+    && str_contains($r[2], 'id="tab-people"') && str_contains($r[2], 'id="tab-profile"'));
 
 $node = trim((string) @shell_exec('command -v node 2>/dev/null'));
 if ($node !== '' && preg_match('#<script>(.*?)</script>#s', $r[2], $script_match)) {

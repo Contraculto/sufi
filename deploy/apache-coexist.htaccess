@@ -19,6 +19,7 @@ RewriteRule ^\.well-known/(webfinger|host-meta|nodeinfo)$ /sufi/index.php [QSA,L
 RewriteRule ^ap(/.*)?$ /sufi/index.php [QSA,L]
 RewriteRule ^tags(/.*)?$ /sufi/index.php [QSA,L]
 RewriteRule ^@([^/]+)/?$ /sufi/index.php [QSA,L]
+RewriteRule ^authorize_interaction$ /sufi/index.php [QSA,L]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Then add your existing site's routing rules below this line.

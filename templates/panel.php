@@ -100,10 +100,10 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
   </section>
 
   <nav class="tabs" aria-label="panel sections">
-    <button class="tab active" onclick="switchTab('posts', this)">entries</button>
+    <button class="tab active" id="tab-posts" onclick="switchTab('posts', this)">entries</button>
     <button class="tab" id="tab-inbox" onclick="switchTab('inbox', this)">inbox</button>
-    <button class="tab" onclick="switchTab('people', this)">people</button>
-    <button class="tab" onclick="switchTab('profile', this)">profile</button>
+    <button class="tab" id="tab-people" onclick="switchTab('people', this)">people</button>
+    <button class="tab" id="tab-profile" onclick="switchTab('profile', this)">profile</button>
   </nav>
 
   <div id="panel-posts">

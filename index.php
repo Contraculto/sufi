@@ -224,7 +224,9 @@ switch ($request) {
                 $_SESSION['seen'] = time();
                 $return = $_SESSION['interact_return'] ?? null;
                 unset($_SESSION['interact_return']);
-                header('Location: ' . (is_string($return) && $return !== '' ? $return : $panel_url));
+                $safe_return = is_string($return) && str_starts_with($return, '/')
+                    && !str_starts_with($return, '//') ? $return : null;
+                header('Location: ' . ($safe_return ?: $panel_url));
             } else {
                 rate_limit_hit($limit_key);
                 header('Location: ' . $panel_url . '?error=1');
