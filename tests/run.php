@@ -797,6 +797,58 @@ check('page two group count', 2, (int) ($page2['entries'][0]['count'] ?? 0));
 check('page two carries nested reply', 1, (int) ($page2['entries'][0]['replies'][0]['children']['count'] ?? 0));
 check('fold pages exhausted', true, empty($page2['next_before_id']));
 
+// Out-of-order delivery: strand-d arrives first, then strand-c (replying
+// to strand-b before strand-b exists), then strand-b. The middle reply is
+// newer than its child, so a top-down snapshot of the outer group would
+// freeze strand-c before strand-d attaches — strand-d would vanish.
+$r = expect('strand parent post', 200, post("{$instance}/ap/post", ['content' => 'strand parent', 'password' => 'testpass']));
+$strand_uri = (string) (json_body($r)['object']['id'] ?? '');
+
+expect('strand deep reply', 202, sign_post($inbox, $mk_reply('strand-d', 'deepest fold', "{$remote}/notes/strand-c"), $key, $keyId));
+expect('strand middle reply', 202, sign_post($inbox, $mk_reply('strand-c', 'middle fold', "{$remote}/notes/strand-b"), $key, $keyId));
+expect('strand outer reply', 202, sign_post($inbox, $mk_reply('strand-b', 'outer fold', $strand_uri), $key, $keyId));
+
+$r = expect('strand inbox', 200, http('GET', "{$instance}/ap/inbox?limit=30", $auth_body, $auth_header));
+$strand_group = null;
+foreach (json_body($r)['entries'] as $e) {
+    if (($e['parent_uri'] ?? '') === $strand_uri) { $strand_group = $e; }
+}
+check('strand group found', true, $strand_group !== null);
+check('strand group count', 1, (int) ($strand_group['count'] ?? 0));
+check('strand outer has children', true, (bool) ($strand_group['replies'][0]['has_children'] ?? false));
+check('strand middle carried', 1, (int) ($strand_group['replies'][0]['children']['count'] ?? 0));
+check('strand middle preview', true, str_contains((string) ($strand_group['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'middle fold'));
+check('strand deepest survives', 1, (int) ($strand_group['replies'][0]['children']['replies'][0]['children']['count'] ?? 0));
+check('strand deepest preview', true, str_contains((string) ($strand_group['replies'][0]['children']['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'deepest fold'));
+
+// Read aggregation: a group mixing read and unread replies stays unread
+// until every reply in it is read.
+$r = expect('readmix parent post', 200, post("{$instance}/ap/post", ['content' => 'readmix parent', 'password' => 'testpass']));
+$readmix_uri = (string) (json_body($r)['object']['id'] ?? '');
+expect('readmix one', 202, sign_post($inbox, $mk_reply('readmix-1', 'first readmix', $readmix_uri), $key, $keyId));
+expect('readmix two', 202, sign_post($inbox, $mk_reply('readmix-2', 'second readmix', $readmix_uri), $key, $keyId));
+
+$find_group = function (string $uri) use ($instance, $auth_body, $auth_header) {
+    $r = http('GET', "{$instance}/ap/inbox?limit=30", $auth_body, $auth_header);
+    foreach (json_body($r)['entries'] as $e) {
+        if (($e['parent_uri'] ?? '') === $uri) { return $e; }
+    }
+    return null;
+};
+
+$readmix_group = $find_group($readmix_uri);
+check('readmix group found', true, $readmix_group !== null);
+check('readmix group count', 2, (int) ($readmix_group['count'] ?? 0));
+$first_reply_id = (int) ($readmix_group['replies'][0]['id'] ?? 0);
+post("{$instance}/ap/inbox/read", ['id' => $first_reply_id, 'password' => 'testpass']);
+
+$readmix_group = $find_group($readmix_uri);
+check('mixed group stays unread', 0, (int) ($readmix_group['is_read'] ?? 1));
+
+http('GET', "{$instance}/ap/inbox?mark_read=1", $auth_body, $auth_header);
+$readmix_group = $find_group($readmix_uri);
+check('read group is read', 1, (int) ($readmix_group['is_read'] ?? 0));
+
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
     'id'       => "{$actorU}#undos/1",

@@ -495,37 +495,61 @@ function inbox_group_entries(array $items, string $base) {
     $make_group = function (string $uri, array $list) use ($db_handler, $local_prefix) {
         $list = array_slice(array_reverse($list), 0, 100);  // oldest first, capped
         $read = 1;
-        foreach ($list as $r) { $read = $read && (int) $r['is_read']; }
+        foreach ($list as $r) { $read &= (int) $r['is_read']; }
         return [
             'type'       => 'group',
             'parent_uri' => $uri,
             'parent'     => inbox_parent_summary($db_handler, $uri, $local_prefix),
             'count'      => count($list),
             'replies'    => $list,
-            'is_read'    => $read ? 1 : 0,
+            'is_read'    => $read,
         ];
     };
 
-    // Attach each group whose parent is a reply in this payload underneath
-    // that reply; those groups never surface at the top level.
-    $nested = [];
-    foreach ($by_parent as $uri => $list) {
-        foreach ($list as $i => $reply) {
+    // Build groups lazily, bottom-up: a child group is fully built before
+    // the parent attaches it, so grandchildren can't be stranded when the
+    // middle reply arrived after its child. A reply cycle (a remote actor
+    // sending inReplyTo loops) is cut by tracking URIs currently on the
+    // build stack — those re-entries return null and stay unattached.
+    $nested   = [];
+    $built    = [];
+    $building = [];
+    $build = function (string $uri) use (&$build, $by_parent, &$nested, &$built, &$building, $make_group, $db_handler) {
+        if (isset($building[$uri])) { return null; }
+        if (isset($built[$uri]))    { return $built[$uri]; }
+        $building[$uri] = true;
+        $group = $make_group($uri, $by_parent[$uri]);
+        foreach ($group['replies'] as $i => $reply) {
             $child_uri = (string) ($reply['object_uri'] ?? '');
             if ($child_uri === '') { continue; }
-            $children = $by_parent[$child_uri]
-                ?? inbox_child_replies($db_handler, $child_uri);
-            if (!$children) { continue; }
-            $by_parent[$uri][$i]['has_children'] = true;
-            $by_parent[$uri][$i]['children']     = $make_group($child_uri, $children);
+            if (isset($by_parent[$child_uri])) {
+                $child = $build($child_uri);
+                if ($child === null) { continue; }
+            } else {
+                $children = inbox_child_replies($db_handler, $child_uri);
+                if (!$children) { continue; }
+                $child = $make_group($child_uri, $children);  // shallow store fallback
+            }
+            $group['replies'][$i]['has_children'] = true;
+            $group['replies'][$i]['children']     = $child;
             $nested[$child_uri] = true;
         }
-    }
+        unset($building[$uri]);
+        return $built[$uri] = $group;
+    };
 
     foreach ($by_parent as $uri => $list) {
         if (isset($nested[$uri])) { continue; }
-        $entries[] = $make_group($uri, $list);
+        $group = $build($uri);
+        if ($group !== null) { $entries[] = $group; }
     }
+
+    // A group emitted before its parent was built would reappear as a
+    // child of that parent below — keep only the nested copy.
+    $entries = array_values(array_filter(
+        $entries,
+        fn($e) => $e['type'] !== 'group' || !isset($nested[$e['parent_uri']])
+    ));
 
     // Newest activity first, same as the flat list it replaces.
     $newest = function (array $entry) {
@@ -578,10 +602,9 @@ function inbox_enrich_item(array $row) {
 function inbox_child_replies($db_handler, string $uri) {
     $out = [];
     foreach (System\Database\get_inbox_items($db_handler, 100) as $row) {
-        $data   = json_decode((string) $row['data'], true) ?: [];
-        $object = $data['object'] ?? null;
-        $in_reply_to = is_array($object) ? ($object['inReplyTo'] ?? null) : null;
-        if (is_string($in_reply_to) && $in_reply_to === $uri) {
+        if (($row['type'] ?? '') !== 'Create') { continue; }  // likes/boosts can't be replies
+        $data = json_decode((string) $row['data'], true) ?: [];
+        if (inbox_reply_to($data) === $uri) {
             $out[] = inbox_enrich_item($row);
         }
     }
