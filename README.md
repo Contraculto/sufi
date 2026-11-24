@@ -237,6 +237,7 @@ RewriteRule ^sufi/sys/ - [F,L]
 RewriteRule ^\.well-known/(webfinger|host-meta)$ /sufi/index.php [QSA,L]
 RewriteRule ^ap(/.*)?$ /sufi/index.php [QSA,L]
 RewriteRule ^@([^/]+)/?$ /sufi/index.php [QSA,L]
+RewriteRule ^authorize_interaction$ /sufi/index.php [QSA,L]
 
 # ... your existing rules follow here ...
 ```
@@ -256,7 +257,7 @@ See `deploy/nginx.conf` for a complete server block.
 The key directive: route specific paths to SUFI's `index.php` while keeping the rest for your existing site.
 
 ```nginx
-location ~ ^/(\.well-known/(webfinger|host-meta)|ap(/|$)|@[^/]+/?$) {
+location ~ ^/(\.well-known/(webfinger|host-meta)|ap(/|$)|@[^/]+/?$|authorize_interaction/?$) {
     fastcgi_pass   unix:/run/php/php8.4-fpm.sock;
     fastcgi_param  SCRIPT_FILENAME /var/www/html/sufi/index.php;
     fastcgi_param  REQUEST_URI     $request_uri;

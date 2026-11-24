@@ -139,6 +139,10 @@ for path in "/.well-known/webfinger" "/ap/actor" "/ap/outbox"; do
     log "  $path → $code"
 done
 
+code=$(curl -s -o /dev/null -w '%{http_code}' "https://$HOST/authorize_interaction")
+[[ "$code" == "400" ]] || die "authorize_interaction returned $code — is the web server routing it to SUFI?"
+log "  /authorize_interaction → 400 (routed)"
+
 HANDLE=$(ssh "root@$HOST" "php -r 'include \"$REMOTE_DIR/sys/config.php\"; echo \$username;'")
 curl -fsS "https://$HOST/.well-known/webfinger?resource=acct:$HANDLE@$HOST" | grep -q '"subject"' \
     || die "webfinger for @$HANDLE@$HOST is broken"
