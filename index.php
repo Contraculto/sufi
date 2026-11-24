@@ -521,7 +521,7 @@ function inbox_group_entries(array $items, string $base) {
         $group = $make_group($uri, $by_parent[$uri]);
         foreach ($group['replies'] as $i => $reply) {
             $child_uri = (string) ($reply['object_uri'] ?? '');
-            if ($child_uri === '') { continue; }
+            if ($child_uri === '' || $child_uri === $uri) { continue; }  // a reply can't parent its own group
             if (isset($by_parent[$child_uri])) {
                 $child = $build($child_uri);
                 if ($child === null) { continue; }

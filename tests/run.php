@@ -953,6 +953,34 @@ check('mid note reply nested', 1, (int) ($mid_group['replies'][0]['children']['c
 check('mid nested preview', true, str_contains((string) ($mid_group['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'answer to mid'));
 check('mid group not duplicated at top level', 0, $top_level_mids);
 
+// Self-reference: an object whose inReplyTo is its own id must not end up
+// nested inside its own group.
+$self_uri = "{$remote}/notes/self-ref";
+$self_ref = $mk_reply('self-ref', 'self referential', $self_uri);
+$self_ref['object']['id'] = $self_uri;
+expect('self-referential reply', 202, sign_post($inbox, $self_ref, $key, $keyId));
+
+$count_note = function (array $group) use (&$count_note, $self_uri) {
+    $n = 0;
+    foreach ($group['replies'] as $r) {
+        if (($r['object_uri'] ?? '') === $self_uri) { $n++; }
+        if (!empty($r['children'])) { $n += $count_note($r['children']); }
+    }
+    return $n;
+};
+
+$r = expect('self-ref inbox', 200, http('GET', "{$instance}/ap/inbox?limit=30", $auth_body, $auth_header));
+$self_group = null;
+$self_count = 0;
+foreach (json_body($r)['entries'] as $e) {
+    if ($e['type'] !== 'group') { continue; }
+    $self_count += $count_note($e);
+    if (($e['parent_uri'] ?? '') === $self_uri) { $self_group = $e; }
+}
+check('self-ref group found', true, $self_group !== null);
+check('self-ref note appears once', 1, $self_count);
+check('self-ref has no children', true, empty($self_group['replies'][0]['has_children']));
+
 // Read aggregation: a group mixing read and unread replies stays unread
 // until every reply in it is read.
 $r = expect('readmix parent post', 200, post("{$instance}/ap/post", ['content' => 'readmix parent', 'password' => 'testpass']));
