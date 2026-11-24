@@ -431,7 +431,7 @@ function inbox() {
 }
 
 function inbox_items() {
-    global $db_handler;
+    global $db_handler, $base_url;
 
     if (!panel_auth()) {
         http_response_code(401);
@@ -451,15 +451,7 @@ function inbox_items() {
 
     $items = [];
     foreach ($rows as $row) {
-        $data = json_decode((string) $row['data'], true) ?: [];
-        $row['data']     = $data;
-        $row['actor_handle'] = ($row['actor_handle'] ?? '') !== ''
-            ? $row['actor_handle']
-            : actor_handle((string) $row['actor_uri'], []);
-        $row['kind']     = inbox_kind((string) $row['type'], $data);
-        $row['reply_to'] = inbox_reply_to($data);
-        $row['preview']  = inbox_preview($data);
-        $items[] = $row;
+        $items[] = inbox_enrich_item($row);
     }
 
     $next = ($more && $items) ? (int) $items[count($items) - 1]['id'] : null;
@@ -471,10 +463,129 @@ function inbox_items() {
 
     header('Content-Type: application/json');
     echo json_encode([
-        'items'          => $items,
+        'entries'        => inbox_group_entries($items, (string) $base_url),
         'next_before_id' => $next,
         'unread'         => $unread,
     ]);
+}
+
+/**
+ * Fold reply items into groups keyed by the URI they reply to. Everything
+ * else stays a top-level item entry. Replies inside a group are oldest
+ * first; a group whose parent is itself a reply in this payload nests
+ * inside that reply instead of appearing at the top level. When the
+ * parent reply sits on an earlier pagination page, its children are
+ * picked up from stored inbox rows instead.
+ */
+function inbox_group_entries(array $items, string $base) {
+    global $db_handler;
+
+    $local_prefix = $base . 'ap/post/';
+
+    $by_parent = [];
+    $entries   = [];
+    foreach ($items as $item) {
+        if (($item['kind'] ?? '') === 'reply' && !empty($item['reply_to'])) {
+            $by_parent[$item['reply_to']][] = $item;
+        } else {
+            $entries[] = ['type' => 'item', 'item' => $item];
+        }
+    }
+
+    $make_group = function (string $uri, array $list) use ($db_handler, $local_prefix) {
+        $list = array_slice(array_reverse($list), 0, 100);  // oldest first, capped
+        $read = 1;
+        foreach ($list as $r) { $read = $read && (int) $r['is_read']; }
+        return [
+            'type'       => 'group',
+            'parent_uri' => $uri,
+            'parent'     => inbox_parent_summary($db_handler, $uri, $local_prefix),
+            'count'      => count($list),
+            'replies'    => $list,
+            'is_read'    => $read ? 1 : 0,
+        ];
+    };
+
+    // Attach each group whose parent is a reply in this payload underneath
+    // that reply; those groups never surface at the top level.
+    $nested = [];
+    foreach ($by_parent as $uri => $list) {
+        foreach ($list as $i => $reply) {
+            $child_uri = (string) ($reply['object_uri'] ?? '');
+            if ($child_uri === '') { continue; }
+            $children = $by_parent[$child_uri]
+                ?? inbox_child_replies($db_handler, $child_uri);
+            if (!$children) { continue; }
+            $by_parent[$uri][$i]['has_children'] = true;
+            $by_parent[$uri][$i]['children']     = $make_group($child_uri, $children);
+            $nested[$child_uri] = true;
+        }
+    }
+
+    foreach ($by_parent as $uri => $list) {
+        if (isset($nested[$uri])) { continue; }
+        $entries[] = $make_group($uri, $list);
+    }
+
+    // Newest activity first, same as the flat list it replaces.
+    $newest = function (array $entry) {
+        if ($entry['type'] === 'item') { return (int) $entry['item']['id']; }
+        $replies = $entry['replies'];
+        return (int) $replies[count($replies) - 1]['id'];
+    };
+    usort($entries, fn($a, $b) => $newest($b) <=> $newest($a));
+
+    return $entries;
+}
+
+/**
+ * Best-effort summary of what a group of replies is replying to. Local
+ * posts resolve from the database; anything remote (or deleted) is just
+ * a link — no outbound fetch.
+ */
+function inbox_parent_summary($db_handler, string $uri, string $local_prefix) {
+    if (str_starts_with($uri, $local_prefix)) {
+        $guid = substr($uri, strlen($local_prefix));
+        $post = System\Database\get_post($db_handler, $guid);
+        if ($post) {
+            return ['local' => true, 'guid' => $guid, 'content' => (string) $post['content']];
+        }
+    }
+    return ['local' => false];
+}
+
+/**
+ * Shape a raw InboxItem row for the API: decoded data plus the derived
+ * fields the panel renders.
+ */
+function inbox_enrich_item(array $row) {
+    $data = json_decode((string) $row['data'], true) ?: [];
+    $row['data']     = $data;
+    $row['actor_handle'] = ($row['actor_handle'] ?? '') !== ''
+        ? $row['actor_handle']
+        : actor_handle((string) $row['actor_uri'], []);
+    $row['kind']     = inbox_kind((string) $row['type'], $data);
+    $row['reply_to'] = inbox_reply_to($data);
+    $row['preview']  = inbox_preview($data);
+    return $row;
+}
+
+/**
+ * Stored inbox replies addressed to $uri, newest first. Used to nest a
+ * thread continuation under its parent reply even when the continuation
+ * fell on a page already consumed by cursor pagination.
+ */
+function inbox_child_replies($db_handler, string $uri) {
+    $out = [];
+    foreach (System\Database\get_inbox_items($db_handler, 100) as $row) {
+        $data   = json_decode((string) $row['data'], true) ?: [];
+        $object = $data['object'] ?? null;
+        $in_reply_to = is_array($object) ? ($object['inReplyTo'] ?? null) : null;
+        if (is_string($in_reply_to) && $in_reply_to === $uri) {
+            $out[] = inbox_enrich_item($row);
+        }
+    }
+    return $out;
 }
 
 function mark_inbox_endpoint() {

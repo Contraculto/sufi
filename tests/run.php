@@ -620,8 +620,8 @@ $auth_body   = json_encode(['password' => 'testpass']);
 
 $r = expect('inbox listing', 200, http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header));
 $inbox_page = json_body($r);
-check('inbox response has items and unread', true, isset($inbox_page['items'], $inbox_page['unread']));
-$first = $inbox_page['items'][0] ?? [];
+check('inbox response has entries and unread', true, isset($inbox_page['entries'], $inbox_page['unread']));
+$first = $inbox_page['entries'][0]['item'] ?? [];
 check('inbox item has readable handle', '@bob@' . $hostport, $first['actor_handle'] ?? null);
 check('inbox item kind is post', 'post', $first['kind'] ?? null);
 check('inbox item has preview', true, str_contains((string) ($first['preview'] ?? ''), 'hello from bob'));
@@ -667,42 +667,56 @@ expect('signed Announce', 202, sign_post($inbox, $announce, $key, $keyId));
 
 $r = expect('inbox after interactions', 200, http('GET', "{$instance}/ap/inbox?limit=10", $auth_body, $auth_header));
 $kinds = [];
-$reply_item = null;
-foreach (json_body($r)['items'] as $item) {
-    $kinds[$item['kind']] = true;
-    if (($item['kind'] ?? '') === 'reply') { $reply_item = $item; }
+$folded = null;
+foreach (json_body($r)['entries'] as $entry) {
+    if ($entry['type'] === 'item') {
+        $kinds[$entry['item']['kind']] = true;
+    } elseif (($entry['parent_uri'] ?? '') === $second['object']['id']) {
+        $folded = $entry;
+    }
 }
-check('reply classified', true, isset($kinds['reply']));
 check('mention classified', true, isset($kinds['mention']));
 check('boost classified', true, isset($kinds['boost']));
 check('like classified', true, isset($kinds['like']));
-check('reply exposes parent url', $second['object']['id'], $reply_item['reply_to'] ?? null);
+check('no top-level reply items', true, !isset($kinds['reply']));
+check('reply folded into group', true, $folded !== null);
+check('group exposes parent url', $second['object']['id'], $folded['parent_uri'] ?? null);
+check('group parent resolved locally', true, (bool) ($folded['parent']['local'] ?? false));
+check('group parent guid', basename((string) $second['object']['id']), $folded['parent']['guid'] ?? null);
+check('group parent has post content', true, str_contains((string) ($folded['parent']['content'] ?? ''), 'from panel'));
+check('group count', 1, (int) ($folded['count'] ?? 0));
 
 $unread_before = (int) json_body($r)['unread'];
 check('unread count matches', true, $unread_before >= 4);
 
-// Pagination: walk one item at a time.
+// Pagination: walk one entry at a time.
 $r = expect('inbox page 1', 200, http('GET', "{$instance}/ap/inbox?limit=1", $auth_body, $auth_header));
 $p1 = json_body($r);
-check('page holds one item', 1, count($p1['items']));
+check('page holds one entry', 1, count($p1['entries']));
 check('page exposes cursor', true, !empty($p1['next_before_id']));
 $r = http('GET', "{$instance}/ap/inbox?limit=1&before_id=" . $p1['next_before_id'], $auth_body, $auth_header);
 $p2 = json_body($r);
-check('cursor returns next item', true, ($p2['items'][0]['id'] ?? 0) !== ($p1['items'][0]['id'] ?? 0));
+$entry_key = fn(array $e) => $e['type'] === 'item'
+    ? 'i' . $e['item']['id']
+    : 'g' . $e['replies'][count($e['replies']) - 1]['id'];
+check('cursor returns next entry', true, $entry_key($p2['entries'][0]) !== $entry_key($p1['entries'][0]));
 
 // Per-item read, then mark all.
-$target_id = (int) $p1['items'][0]['id'];
+$target_id = (int) $p1['entries'][0]['item']['id'];
 $r = post("{$instance}/ap/inbox/read", ['id' => $target_id, 'password' => 'testpass']);
 $after_one = json_body($r)['unread'] ?? null;
 check('per-item read lowers unread', true, $after_one === $unread_before - 1);
 
 $r = expect('inbox mark all read', 200, http('GET', "{$instance}/ap/inbox?mark_read=1", $auth_body, $auth_header));
-$pre_mark = array_map(fn($i) => (int) $i['is_read'], json_body($r)['items']);
+$pre_mark = [];
+foreach (json_body($r)['entries'] as $e) {
+    $pre_mark[] = (int) ($e['type'] === 'item' ? $e['item']['is_read'] : $e['is_read']);
+}
 check('mark_read returns pre-mark state', true, in_array(0, $pre_mark, true));
 check('mark_read response keeps unread count', true, (int) json_body($r)['unread'] >= 0);
 
 $r = http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header);
-check('inbox items read afterwards', 1, (int) (json_body($r)['items'][0]['is_read'] ?? 0));
+check('inbox entries read afterwards', 1, (int) (json_body($r)['entries'][0]['item']['is_read'] ?? 0));
 check('unread is zero', 0, (int) json_body($r)['unread']);
 
 expect('delete inbox item', 200, post("{$instance}/ap/inbox/delete", ['id' => $target_id, 'password' => 'testpass']));
@@ -710,6 +724,78 @@ check('inbox item deleted', 0, count(db($db_path, 'SELECT * FROM InboxItem WHERE
 
 post("{$instance}/ap/inbox/delete", ['id' => 'read', 'password' => 'testpass']);
 check('read inbox cleared', 0, count(db($db_path, 'SELECT * FROM InboxItem WHERE is_read = 1')));
+
+// ── inbox: reply folding ─────────────────────────────────────────────────────
+
+section('Inbox: reply folding');
+
+// Fresh parent post, then four replies: two to the post, one to the first
+// reply, one to a remote note that was never in this inbox.
+$r = expect('folding parent post', 200, post("{$instance}/ap/post", ['content' => 'parent letter', 'password' => 'testpass']));
+$parent_uri = (string) (json_body($r)['object']['id'] ?? '');
+$parent_guid = basename($parent_uri);
+
+$mk_reply = function (string $note, string $text, string $in_reply_to) use ($actorU, $remote) {
+    return [
+        '@context' => 'https://www.w3.org/ns/activitystreams',
+        'id'       => "{$actorU}#creates/{$note}",
+        'type'     => 'Create',
+        'actor'    => $actorU,
+        'object'   => [
+            'id'        => "{$remote}/notes/{$note}",
+            'type'      => 'Note',
+            'content'   => "<p>{$text}</p>",
+            'inReplyTo' => $in_reply_to,
+        ],
+    ];
+};
+
+expect('reply fold one', 202, sign_post($inbox, $mk_reply('fold-1', 'first fold', $parent_uri), $key, $keyId));
+expect('reply fold two', 202, sign_post($inbox, $mk_reply('fold-2', 'second fold', $parent_uri), $key, $keyId));
+expect('reply fold nested', 202, sign_post($inbox, $mk_reply('fold-3', 'nested fold', "{$remote}/notes/fold-1"), $key, $keyId));
+expect('reply fold orphan', 202, sign_post($inbox, $mk_reply('fold-4', 'orphan fold', "{$remote}/notes/never-seen"), $key, $keyId));
+
+$r = expect('folded inbox', 200, http('GET', "{$instance}/ap/inbox?limit=20", $auth_body, $auth_header));
+$entries = json_body($r)['entries'];
+check('a page of only replies folds to two groups', 2, count($entries));
+check('no standalone items on reply page', 0, count(array_filter($entries, fn($e) => $e['type'] === 'item')));
+
+$thread = null;
+$orphan = null;
+foreach ($entries as $e) {
+    if ($e['type'] !== 'group') { continue; }
+    if ($e['parent_uri'] === $parent_uri) { $thread = $e; }
+    if ($e['parent_uri'] === "{$remote}/notes/never-seen") { $orphan = $e; }
+}
+check('thread group found', true, $thread !== null);
+check('thread group count', 2, (int) ($thread['count'] ?? 0));
+check('thread replies oldest first', true, str_contains((string) ($thread['replies'][0]['preview'] ?? ''), 'first fold'));
+check('thread replies newest last', true, str_contains((string) ($thread['replies'][1]['preview'] ?? ''), 'second fold'));
+check('thread parent guid', $parent_guid, $thread['parent']['guid'] ?? null);
+check('thread parent content', true, str_contains((string) ($thread['parent']['content'] ?? ''), 'parent letter'));
+check('thread group unread', 0, (int) ($thread['is_read'] ?? 1));
+check('first reply has children', true, (bool) ($thread['replies'][0]['has_children'] ?? false));
+check('nested group reply count', 1, (int) ($thread['replies'][0]['children']['count'] ?? 0));
+check('nested reply preview', true, str_contains((string) ($thread['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'nested fold'));
+check('second reply has no children', true, empty($thread['replies'][1]['has_children']));
+check('orphan group found', true, $orphan !== null);
+check('orphan parent is remote', false, (bool) ($orphan['parent']['local'] ?? true));
+
+// Pagination consumes folded rows: limit=2 over four replies gives one page
+// of two groups, and the cursor lands on the oldest consumed reply.
+$r = expect('fold page one', 200, http('GET', "{$instance}/ap/inbox?unread=1&limit=2", $auth_body, $auth_header));
+$page1 = json_body($r);
+check('fold page one has two groups', 2, count($page1['entries']));
+check('fold page one continues', true, !empty($page1['next_before_id']));
+check('cursor is oldest consumed reply', (int) $page1['next_before_id'],
+    (int) $page1['entries'][1]['replies'][0]['id']);
+
+$r = expect('fold page two', 200, http('GET', "{$instance}/ap/inbox?unread=1&limit=2&before_id=" . $page1['next_before_id'], $auth_body, $auth_header));
+$page2 = json_body($r);
+check('fold page two has one group', 1, count($page2['entries']));
+check('page two group count', 2, (int) ($page2['entries'][0]['count'] ?? 0));
+check('page two carries nested reply', 1, (int) ($page2['entries'][0]['replies'][0]['children']['count'] ?? 0));
+check('fold pages exhausted', true, empty($page2['next_before_id']));
 
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
