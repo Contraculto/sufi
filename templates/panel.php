@@ -611,7 +611,7 @@ function renderInboxGroup(group, depth = 0) {
     const host   = esc(String(group.parent_uri).replace(/^https?:\/\//, '').split('/')[0]);
 
     const parent = group.parent && group.parent.local
-        ? `<div class="letter-body group-parent">${esc(threadBody(group.parent.content)).slice(0, 300)}</div>`
+        ? `<div class="letter-body group-parent">${groupParentExcerpt(group.parent.content)}</div>`
         : `<div class="letter-body muted">replying to ${host}</div>`;
 
     return `<article class="letter group${group.is_read ? '' : ' unread'}" id="inbox-g${newest.id}">
@@ -802,9 +802,11 @@ async function markAllRead() {
     setStatus('inbox marked read');
 }
 
-function threadBody(html) {
-    const text = String(html || '').replace(/<[^>]+>/g, ' ');
-    return esc(text.replace(/\s+/g, ' ').trim());
+// Plain-text excerpt of a local parent post: strip tags, squeeze space,
+// cut, then escape — order matters so entities are never split.
+function groupParentExcerpt(html) {
+    const text = String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return esc(text.slice(0, 300));
 }
 
 function replyTo(uri) {
