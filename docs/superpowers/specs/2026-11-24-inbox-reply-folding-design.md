@@ -60,9 +60,15 @@ Grouping rules (all inside `inbox_items()` in `index.php`):
 - `count` = number of replies included in the group (capped at 100 per group;
   the headline count matches what is included).
 - `is_read` = 1 only if **all** replies in the group are read.
-- **Nested threads:** if a reply row's `object_uri` equals the `parent_uri` of
-  another group in the same payload, the reply row gets `has_children: true` and
-  the panel renders that group nested inside it (indented one level deeper).
+- **Nested threads:** if a reply row's `object_uri` equals the `parent_uri`
+  of another group in the same payload, the reply row gets `has_children: true`
+  and the panel renders that group nested inside it (indented one level
+  deeper). If those child rows were consumed by an earlier page instead, the
+  group is completed from stored inbox rows (one level deep) so threads stay
+  complete across pages; a note may then appear twice and the panel skips
+  already-rendered ids. `?unread=1` pages still include already-read children
+  when their parent reply is on the page — thread completeness beats strict
+  unread filtering.
 - **Parent resolution:** if `parent_uri` starts with the local base URL +
   `/ap/post/`, look the post up in the `Post` table by guid and attach
   `parent: { local: true, guid, content }`. Remote (or deleted) parents get

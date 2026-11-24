@@ -584,12 +584,15 @@ git commit -m "feat: render folded reply groups in the panel inbox"
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Full suite**
+- [x] **Step 1: Full suite**
 
 Run: `./scripts/test.sh`
-Expected: PASS, 0 failures.
+Expected: PASS, 0 failures. — done: 382/382, re-run during final review.
 
-- [ ] **Step 2: Manual smoke against real data**
+- [ ] **Step 2: Manual smoke against real data** — DEFERRED to deploy: no local
+dev database with inbox rows exists (per this step's own fallback text). Run
+against the live panel after `./scripts/deploy.sh`; verify group cards expand,
+nest, and delete correctly.
 
 The suite's sandbox instances are throwaway, so the last check is against a live inbox. If a development copy of `sys/sufi.sqlite` with inbox rows is available locally:
 

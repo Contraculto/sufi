@@ -483,7 +483,7 @@ the post they answer:
       "is_read": 1
     }
   ],
-  "next_before_id": 41,
+  "next_before_id": 42,
   "unread": 3
 }
 ```
@@ -493,6 +493,12 @@ first, and a reply that got answers of its own carries them in `children`.
 `parent` resolves to the local post when the thread started here and is
 `{ "local": false }` for remote or unknown parents. A group's `is_read` is
 1 only once every reply in it has been read.
+
+When a reply's own answers were consumed by an earlier page, the group is
+completed from stored inbox rows so the thread stays readable across pages;
+those re-attached children are one level deep. A note can then appear on two
+pages (nested under its parent and on its own page), so clients should skip
+ids they have already rendered.
 
 `kind` is one of `like`, `boost`, `reply`, `mention`, `post`, `other`.
 `limit` defaults to 50 (max 100), `next_before_id` is null on the last page.
