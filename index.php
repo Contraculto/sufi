@@ -580,7 +580,13 @@ function inbox_parent_summary($db_handler, string $uri, string $local_prefix) {
         $guid = substr($uri, strlen($local_prefix));
         $post = System\Database\get_post($db_handler, $guid);
         if ($post) {
-            return ['local' => true, 'guid' => $guid, 'content' => (string) $post['content']];
+            return [
+                'local' => true,
+                'guid'  => $guid,
+                // Stored content is entity-encoded HTML; the excerpt
+                // pipeline expects plain text (same treatment as previews).
+                'content' => html_entity_decode(strip_tags((string) $post['content']), ENT_QUOTES | ENT_HTML5, 'UTF-8'),
+            ];
         }
     }
     return ['local' => false];
@@ -1262,6 +1268,7 @@ function authorize_interaction() {
         header('Location: ' . $panel_url);
         die();
     }
+    unset($_SESSION['interact_return']);
 
     [$ok, $handle, $error] = interact_handle($uri);
     if (!$ok) { interact_error(400, $error); return; }
@@ -1333,6 +1340,7 @@ function interact_follow() {
     }
 
     deliver_follow($profileUrl, $profileInbox, getDataFromURl($profileUrl) ?? []);
+    unset($_SESSION['interact_return']);
     header('Location: ' . $panel_url . '?tab=people');
     die();
 }

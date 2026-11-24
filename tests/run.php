@@ -462,7 +462,7 @@ const hostileReply = {
 const localGroup = {
     type: 'group',
     parent_uri: 'https://local.test/ap/post/abc',
-    parent: { local: true, content: 'Fish &amp; Chips <b>bold</b>' },
+    parent: { local: true, content: 'Fish & Chips <b>bold</b>' },
     count: 2,
     is_read: 0,
     replies: [hostileReply, {
@@ -495,8 +495,10 @@ no('onmouseover breakout', out.includes('onmouseover="'));
 // The escaped forms must be present instead.
 no('handle not escaped', !out.includes('&lt;img src=x onerror=alert(1)&gt;'));
 no('preview not escaped', !out.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
-// Local parent: tags stripped, entity escaped as text (never decoded).
-no('parent entity decoded', !out.includes('Fish &amp;amp; Chips'));
+// Local parent: tags stripped, ampersand escaped exactly once (the API
+// sends decoded plain text; the renderer escapes it for HTML).
+no('parent entity double-escaped', out.includes('Fish &amp;amp; Chips'));
+no('parent ampersand missing', !out.includes('Fish &amp; Chips'));
 no('parent tag leaked', out.includes('<b>'));
 // Remote parent: host text linking to the full escaped uri.
 no('remote parent not linked', !out.includes('href="https://remote.example/note?id=1&amp;x=2"'));
@@ -1012,6 +1014,19 @@ http('GET', "{$instance}/ap/inbox?mark_read=1", $auth_body, $auth_header);
 $readmix_group = $find_group($readmix_uri);
 check('read group is read', 1, (int) ($readmix_group['is_read'] ?? 0));
 
+// Group parent summaries carry plain text: entity-encoded stored HTML is
+// decoded and tags are stripped (same treatment as previews).
+$r = expect('entity parent post', 200, post("{$instance}/ap/post", ['content' => 'salt & pepper', 'password' => 'testpass']));
+$entity_uri = (string) (json_body($r)['object']['id'] ?? '');
+expect('reply to entity parent', 202, sign_post($inbox, $mk_reply('fold-5', 'tasty', $entity_uri), $key, $keyId));
+$r = expect('entity parent group', 200, http('GET', "{$instance}/ap/inbox?unread=1&limit=20", $auth_body, $auth_header));
+$entity_group = null;
+foreach (json_body($r)['entries'] as $e) {
+    if (($e['parent_uri'] ?? '') === $entity_uri) { $entity_group = $e; }
+}
+check('entity parent group found', true, $entity_group !== null);
+check('entity parent is plain text', 'salt & pepper', trim((string) ($entity_group['parent']['content'] ?? '')));
+
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
     'id'       => "{$actorU}#undos/1",
@@ -1249,20 +1264,22 @@ check('confirm resolves url to handle', true, str_contains($r[2], '@carol@' . $h
 expect('interaction unresolvable url', 400,
     http('GET', "{$interact}?uri=" . urlencode("{$remote}/u/nobody"), null, [], $ijar));
 
-// The follow itself requires the session token.
+// The follow itself requires the session token and a well-formed handle.
 $r = http('POST', $interact, http_build_query(['handle' => '@bob@' . $hostport]),
     ['Content-Type: application/x-www-form-urlencoded'], $ijar);
 check('interaction post without csrf refused', 403, $r[0]);
+expect('interaction malformed handle', 400,
+    post($interact, ['csrf_token' => $icsrf, 'handle' => 'not-a-handle'], $ijar));
 
-$log_before = (string) file_get_contents($rlog);
+$log_before   = (string) file_get_contents($rlog);
+$follow_count = count(db($db_path, 'SELECT * FROM Following WHERE actor_uri = ?', ["{$remote}/u/bob"]));
 $r = expect('interaction follow', 302,
     post($interact, ['csrf_token' => $icsrf, 'handle' => '@bob@' . $hostport], $ijar));
 check('follow lands on people tab', true, str_contains(implode(',', $r[1]['location'] ?? []), 'tab=people'));
-$log_after = (string) file_get_contents($rlog);
 check('follow delivered to remote', true,
-    str_contains($log_after, '"type":"Follow"') && strlen($log_after) > strlen($log_before));
-check('follow recorded', true,
-    count(db($db_path, 'SELECT * FROM Following WHERE actor_uri = ?', ["{$remote}/u/bob"])) >= 1);
+    str_contains(substr((string) file_get_contents($rlog), strlen($log_before)), '"type":"Follow"'));
+check('follow recorded', $follow_count + 1,
+    count(db($db_path, 'SELECT * FROM Following WHERE actor_uri = ?', ["{$remote}/u/bob"])));
 
 // ── subdirectory deployment ───────────────────────────────────────────────────
 

@@ -767,7 +767,13 @@ async function deleteInboxItem(id) {
     inboxUnread = body.unread;
     updateInboxBadge();
     inboxById.delete(id);
-    document.getElementById(`inbox-${id}`)?.remove();
+    const node  = document.getElementById(`inbox-${id}`);
+    const group = node?.closest('.letter.group');
+    node?.remove();
+    if (group && !group.querySelector('.unread')) {
+        group.classList.remove('unread');
+        group.querySelector('.dot')?.remove();
+    }
     dropEmptyGroups();
     setStatus('deleted');
 }
