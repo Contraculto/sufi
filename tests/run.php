@@ -821,6 +821,29 @@ check('strand middle preview', true, str_contains((string) ($strand_group['repli
 check('strand deepest survives', 1, (int) ($strand_group['replies'][0]['children']['replies'][0]['children']['count'] ?? 0));
 check('strand deepest preview', true, str_contains((string) ($strand_group['replies'][0]['children']['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'deepest fold'));
 
+// Group absorption: mid-a answers the note mid-b created, and mid-a is
+// newer, so mid-b's group is emitted top-level before the thread build
+// absorbs it as children — it must appear nested, not duplicated.
+$r = expect('mid parent post', 200, post("{$instance}/ap/post", ['content' => 'mid parent', 'password' => 'testpass']));
+$mid_uri = (string) (json_body($r)['object']['id'] ?? '');
+
+expect('mid note creator', 202, sign_post($inbox, $mk_reply('mid-b', 'note from mid', $mid_uri), $key, $keyId));
+expect('mid note reply', 202, sign_post($inbox, $mk_reply('mid-a', 'answer to mid', "{$remote}/notes/mid-b"), $key, $keyId));
+
+$r = expect('mid inbox', 200, http('GET', "{$instance}/ap/inbox?limit=30", $auth_body, $auth_header));
+$mid_group = null;
+$top_level_mids = 0;
+foreach (json_body($r)['entries'] as $e) {
+    if ($e['type'] !== 'group') { continue; }
+    if ($e['parent_uri'] === $mid_uri) { $mid_group = $e; }
+    if ($e['parent_uri'] === "{$remote}/notes/mid-b") { $top_level_mids++; }
+}
+check('mid thread group found', true, $mid_group !== null);
+check('mid thread count', 1, (int) ($mid_group['count'] ?? 0));
+check('mid note reply nested', 1, (int) ($mid_group['replies'][0]['children']['count'] ?? 0));
+check('mid nested preview', true, str_contains((string) ($mid_group['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'answer to mid'));
+check('mid group not duplicated at top level', 0, $top_level_mids);
+
 // Read aggregation: a group mixing read and unread replies stays unread
 // until every reply in it is read.
 $r = expect('readmix parent post', 200, post("{$instance}/ap/post", ['content' => 'readmix parent', 'password' => 'testpass']));

@@ -438,31 +438,66 @@ GET /ap/inbox?limit=50&before_id=<id>
 Cookie: PHPSESSID=...
 ```
 
-Returns a page of inbox items plus the cursor and unread count:
+Returns a page of inbox entries plus the cursor and unread count. A
+top-level entry is either a plain item or a group of replies folded under
+the post they answer:
 
 ```json
 {
-  "items": [{
-    "id": 42,
-    "type": "Create",
-    "kind": "reply",
-    "actor_uri": "https://mastodon.social/users/alice",
-    "actor_handle": "@alice@mastodon.social",
-    "object_uri": "https://mastodon.social/@alice/123",
-    "reply_to": "https://example.com/ap/post/<guid>",
-    "preview": "nice post",
-    "is_read": 0,
-    "data": { "...": "raw activity" }
-  }],
+  "entries": [
+    {
+      "type": "item",
+      "item": {
+        "id": 42,
+        "type": "Create",
+        "kind": "mention",
+        "actor_uri": "https://mastodon.social/users/alice",
+        "actor_handle": "@alice@mastodon.social",
+        "object_uri": "https://mastodon.social/@alice/123",
+        "reply_to": null,
+        "preview": "hey @alice",
+        "is_read": 0,
+        "data": { "...": "raw activity" }
+      }
+    },
+    {
+      "type": "group",
+      "parent_uri": "https://example.com/ap/post/<guid>",
+      "parent": { "local": true, "guid": "<guid>", "content": "the post they answered" },
+      "count": 1,
+      "replies": [{
+        "id": 43,
+        "type": "Create",
+        "kind": "reply",
+        "actor_uri": "https://mastodon.social/users/bob",
+        "actor_handle": "@bob@mastodon.social",
+        "object_uri": "https://mastodon.social/@bob/456",
+        "reply_to": "https://example.com/ap/post/<guid>",
+        "preview": "nice post",
+        "is_read": 1,
+        "has_children": true,
+        "children": { "...": "nested group, when other replies answered this one" },
+        "data": { "...": "raw activity" }
+      }],
+      "is_read": 1
+    }
+  ],
   "next_before_id": 41,
   "unread": 3
 }
 ```
 
+Replies to the same parent fold into a single group; `replies` are oldest
+first, and a reply that got answers of its own carries them in `children`.
+`parent` resolves to the local post when the thread started here and is
+`{ "local": false }` for remote or unknown parents. A group's `is_read` is
+1 only once every reply in it has been read.
+
 `kind` is one of `like`, `boost`, `reply`, `mention`, `post`, `other`.
 `limit` defaults to 50 (max 100), `next_before_id` is null on the last page.
-`?unread=1` filters to unread items, `?mark_read=1` marks the returned items
-read (the response still shows them as unread, so the panel can render a badge).
+`?unread=1` filters to unread items, `?mark_read=1` marks everything read
+(the response still shows the pre-mark state, so the panel can render a
+badge).
 
 Mark single items read:
 
