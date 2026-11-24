@@ -588,6 +588,7 @@ These are called automatically by other fediverse servers. You don't call them d
 | `GET` | `/.well-known/nodeinfo` | Discovery link for the NodeInfo document |
 | `GET` | `/tags/{tag}` | Simple HTML page listing your posts that use a hashtag |
 | `GET` | `/ap/follow?uri={uri}` | Remote follow redirect for Mastodon's subscribe flow |
+| `GET` | `/authorize_interaction?uri={target}` | Mastodon-compatible follow handoff: confirm page for the target (profile URL or `@user@host`); the POST sends a signed Follow and lands on the people tab. Unauthenticated visitors log in first and return here |
 | `GET` | `/@alice` | HTML profile page |
 
 ---

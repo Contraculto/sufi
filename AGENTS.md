@@ -61,6 +61,7 @@ sufi/
 | Task | File(s) |
 |------|---------|
 | Change routing | `index.php` |
+| Remote follow handoff (authorize_interaction) | `authorize_interaction()` in `index.php` |
 | Change actor/profile output | `index.php` (ActivityPub JSON endpoints) |
 | Verify HTTP Signatures | `index.php` (signature verification logic) |
 | Change HTML views | `templates/` |

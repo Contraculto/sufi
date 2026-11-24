@@ -921,7 +921,12 @@ document.getElementById('content').addEventListener('keydown', event => {
 });
 
 countChars();
-loadPosts();
+const initialTab = new URLSearchParams(location.search).get('tab');
+if (initialTab && loaders[initialTab]) {
+    switchTab(initialTab, document.getElementById(`tab-${initialTab}`));
+} else {
+    loadPosts();
+}
 </script>
 </body>
 </html>
