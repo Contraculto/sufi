@@ -1210,6 +1210,57 @@ check('dead delivery dropped', 0, count(db($db_path, 'SELECT * FROM Delivery')))
 check('drop logged', true, str_contains((string) @file_get_contents($sec_log), 'Delivery.Dropped'));
 unlink($rlog . '.fail');
 
+// ── authorize interaction ────────────────────────────────────────────────────
+
+section('Authorize interaction');
+
+$interact = "{$instance}/authorize_interaction";
+
+expect('interaction without uri', 400, http('GET', $interact));
+expect('interaction garbage uri', 400, http('GET', "{$interact}?uri=hello"));
+
+// Unauthenticated arrivals go to the panel login and come back after it.
+$ijar = '';
+$r = expect('interaction login redirect', 302,
+    http('GET', "{$interact}?uri=" . urlencode('@bob@' . $hostport), null, [], $ijar));
+check('interaction redirects to panel', true, str_contains(implode(',', $r[1]['location'] ?? []), '/sufi/'));
+
+$r = expect('interaction login form', 200, http('GET', "{$instance}/sufi/", null, [], $ijar));
+$icsrf = form_token($r[2]);
+$r = expect('interaction login', 302,
+    post("{$instance}/sufi/", ['password' => 'testpass', 'csrf_token' => $icsrf], $ijar));
+check('login returns to interaction', true, str_contains(implode(',', $r[1]['location'] ?? []), '/authorize_interaction?uri='));
+
+// Authenticated arrivals get a confirm page naming the target.
+$r = expect('interaction confirm by handle', 200,
+    http('GET', "{$interact}?uri=" . urlencode('@bob@' . $hostport), null, [], $ijar));
+check('confirm shows handle', true, str_contains($r[2], '@bob@' . $hostport));
+check('confirm has follow form', true,
+    str_contains($r[2], 'name="csrf_token"') && str_contains($r[2], 'name="handle"'));
+$icsrf = form_token($r[2]);
+
+$r = expect('interaction confirm by url', 200,
+    http('GET', "{$interact}?uri=" . urlencode("{$remote}/u/carol"), null, [], $ijar));
+check('confirm resolves url to handle', true, str_contains($r[2], '@carol@' . $hostport));
+
+expect('interaction unresolvable url', 400,
+    http('GET', "{$interact}?uri=" . urlencode("{$remote}/u/nobody"), null, [], $ijar));
+
+// The follow itself requires the session token.
+$r = http('POST', $interact, http_build_query(['handle' => '@bob@' . $hostport]),
+    ['Content-Type: application/x-www-form-urlencoded'], $ijar);
+check('interaction post without csrf refused', 403, $r[0]);
+
+$log_before = (string) file_get_contents($rlog);
+$r = expect('interaction follow', 302,
+    post($interact, ['csrf_token' => $icsrf, 'handle' => '@bob@' . $hostport], $ijar));
+check('follow lands on people tab', true, str_contains(implode(',', $r[1]['location'] ?? []), 'tab=people'));
+$log_after = (string) file_get_contents($rlog);
+check('follow delivered to remote', true,
+    str_contains($log_after, '"type":"Follow"') && strlen($log_after) > strlen($log_before));
+check('follow recorded', true,
+    count(db($db_path, 'SELECT * FROM Following WHERE actor_uri = ?', ["{$remote}/u/bob"])) >= 1);
+
 // ── subdirectory deployment ───────────────────────────────────────────────────
 
 section('Subdirectory deployment (/sufi prefix)');

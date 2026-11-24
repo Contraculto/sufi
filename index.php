@@ -180,6 +180,10 @@ switch ($request) {
         remote_follow();
         break;
 
+    case "/authorize_interaction":
+        authorize_interaction();
+        break;
+
     case "/sufi":
         // Canonical slash so the panel's relative links resolve correctly.
         header('Location: ' . $panel_url);
@@ -218,7 +222,9 @@ switch ($request) {
                 session_regenerate_id(true);
                 $_SESSION['auth'] = true;
                 $_SESSION['seen'] = time();
-                header('Location: ' . $panel_url);
+                $return = $_SESSION['interact_return'] ?? null;
+                unset($_SESSION['interact_return']);
+                header('Location: ' . (is_string($return) && $return !== '' ? $return : $panel_url));
             } else {
                 rate_limit_hit($limit_key);
                 header('Location: ' . $panel_url . '?error=1');
@@ -1055,6 +1061,22 @@ function update_post_endpoint($guid) {
 // Social actions — follow / unfollow / block / unblock
 // ════════════════════════════════════════════════════════════════════════════════
 
+// Send a signed Follow to a resolved actor and record it as pending.
+function deliver_follow(string $profileUrl, string $profileInbox, array $profileData): void {
+    global $base_url, $db_handler;
+
+    $message = [
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id"       => "{$base_url}" . uuid(),
+        "type"     => "Follow",
+        "actor"    => "{$base_url}ap/actor",
+        "object"   => $profileUrl,
+    ];
+
+    sendMessageToSingle($profileInbox, $message);
+    System\Database\add_following($db_handler, $profileUrl, $profileInbox, $profileData, $message['id'], 'pending');
+}
+
 function action_users() {
     global $base_url, $db_handler;
 
@@ -1108,18 +1130,16 @@ function action_users() {
         return;
     }
 
-    $guid         = uuid();
-    $actor_url    = "{$base_url}ap/actor";
-
     if ($action === "Follow") {
-        $message = [
-            "@context" => "https://www.w3.org/ns/activitystreams",
-            "id"       => "{$base_url}{$guid}",
-            "type"     => "Follow",
-            "actor"    => $actor_url,
-            "object"   => $profileUrl,
-        ];
-    } elseif ($action === "Unfollow") {
+        deliver_follow($profileUrl, $profileInbox, getDataFromURl($profileUrl) ?? []);
+        echo htmlspecialchars("{$action} sent to {$user}");
+        return;
+    }
+
+    $guid      = uuid();
+    $actor_url = "{$base_url}ap/actor";
+
+    if ($action === "Unfollow") {
         $message = [
             "@context" => "https://www.w3.org/ns/activitystreams",
             "id"       => "{$base_url}{$guid}",
@@ -1148,12 +1168,7 @@ function action_users() {
 
     sendMessageToSingle($profileInbox, $message);
 
-    if ($action === "Follow") {
-        $profile_data = getDataFromURl($profileUrl);
-        System\Database\add_following(
-            $db_handler, $profileUrl, $profileInbox, $profile_data ?? [], $message['id'], 'pending'
-        );
-    } elseif ($action === "Unfollow") {
+    if ($action === "Unfollow") {
         System\Database\remove_following($db_handler, $profileUrl);
     } elseif ($action === "Block") {
         System\Database\add_block($db_handler, $profileUrl, $profileInbox, $profile_data ?? []);
@@ -1189,6 +1204,161 @@ function remote_follow() {
 
     http_response_code(400);
     echo "Invalid uri";
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Remote follow handoff (Mastodon-compatible authorize_interaction)
+// ════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Turn an authorize_interaction target into a display handle. Accepts
+ * acct:user@host, @user@host, or an actor/profile URL (fetched once with
+ * the guarded fetcher — only when $fetch_remote is true, i.e. once the
+ * visitor is authenticated). Returns [ok, handle, error].
+ */
+function interact_handle(string $uri, bool $fetch_remote = true) {
+    $uri = trim($uri);
+    if (str_starts_with($uri, 'acct:')) { $uri = substr($uri, 5); }
+
+    if (preg_match('#^https?://#i', $uri)) {
+        if (!$fetch_remote) { return [true, $uri, null]; }
+        $doc  = getDataFromURl($uri);
+        $name = is_array($doc) ? ($doc['preferredUsername'] ?? null) : null;
+        $host = parse_url($uri, PHP_URL_HOST);
+        $port = parse_url($uri, PHP_URL_PORT);
+        if (!is_string($name) || $name === '' || !is_string($host) || $host === '') {
+            return [false, null, 'Could not resolve that profile.'];
+        }
+        return [true, "@{$name}@{$host}" . ($port ? ":{$port}" : ''), null];
+    }
+
+    if (preg_match('/^@?([^@\s]+)@([^@\s]+)$/', $uri, $m)) {
+        return [true, "@{$m[1]}@{$m[2]}", null];
+    }
+
+    return [false, null, 'Invalid uri.'];
+}
+
+function authorize_interaction() {
+    global $username, $server, $panel_url;
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') { interact_follow(); return; }
+
+    $uri = $_GET['uri'] ?? null;
+    if (!is_string($uri) || trim($uri) === '') {
+        interact_error(400, 'Missing uri.');
+        return;
+    }
+
+    // Format check before auth: reject garbage without making the visitor
+    // log in, and never fetch remote URLs for anonymous requests.
+    [$ok, , $error] = interact_handle($uri, false);
+    if (!$ok) { interact_error(400, $error); return; }
+
+    if (!panel_auth()) {
+        $_SESSION['interact_return'] = $_SERVER['REQUEST_URI'];
+        header('Location: ' . $panel_url);
+        die();
+    }
+
+    [$ok, $handle, $error] = interact_handle($uri);
+    if (!$ok) { interact_error(400, $error); return; }
+
+    require_once __DIR__ . '/templates/_theme.php';
+    header('Content-Type: text/html; charset=utf-8');
+    Templates\theme_head("follow {$handle} — @{$username}@{$server}");
+    ?><body>
+<div id="app">
+  <header class="masthead">
+    <div class="kicker">
+      <span>a follow request</span>
+      <span><?= date('j F Y') ?></span>
+    </div>
+    <div class="masthead-row">
+      <div>
+        <h1 class="nameplate">Follow <?= htmlspecialchars($handle) ?>?</h1>
+        <div class="handle">they are asked to approve it</div>
+      </div>
+      <a class="btn ghost small" href="<?= htmlspecialchars($panel_url) ?>">not now</a>
+    </div>
+  </header>
+
+  <div class="ledger">
+    <form method="post" action="">
+      <input type="hidden" name="csrf_token" value="<?= htmlspecialchars((string) ($_SESSION['csrf_token'] ?? '')) ?>">
+      <input type="hidden" name="handle" value="<?= htmlspecialchars($handle) ?>">
+      <button class="btn primary" type="submit">send follow</button>
+    </form>
+  </div>
+
+  <footer class="colophon">
+    <span>Everything here is public and federated.</span>
+    <span><a href="<?= htmlspecialchars($panel_url) ?>">the notebook</a></span>
+  </footer>
+</div>
+</body>
+</html><?php
+}
+
+function interact_follow() {
+    global $panel_url;
+
+    if (!panel_auth()) {
+        $_SESSION['interact_return'] = $_SERVER['REQUEST_URI'];
+        header('Location: ' . $panel_url);
+        die();
+    }
+
+    $token = (string) ($_POST['csrf_token'] ?? '');
+    if ($token === '' || !hash_equals((string) ($_SESSION['csrf_token'] ?? ''), $token)) {
+        http_response_code(403);
+        echo 'Bad token';
+        return;
+    }
+
+    $handle = trim((string) ($_POST['handle'] ?? ''));
+    if (!preg_match('/^@?[^@\s]+@[^@\s]+$/', $handle)) {
+        interact_error(400, 'Invalid handle.');
+        return;
+    }
+
+    $details      = getUserDetails($handle);
+    $profileInbox = $details['inbox'] ?? null;
+    $profileUrl   = $details['profile'] ?? null;
+    if (!$profileUrl || !$profileInbox) {
+        interact_error(400, 'Could not resolve that handle.');
+        return;
+    }
+
+    deliver_follow($profileUrl, $profileInbox, getDataFromURl($profileUrl) ?? []);
+    header('Location: ' . $panel_url . '?tab=people');
+    die();
+}
+
+function interact_error(int $status, string $message) {
+    global $panel_url;
+
+    require_once __DIR__ . '/templates/_theme.php';
+    http_response_code($status);
+    header('Content-Type: text/html; charset=utf-8');
+    Templates\theme_head('follow request');
+    ?><body>
+<div id="app">
+  <header class="masthead">
+    <div class="kicker"><span>a follow request</span></div>
+    <div class="masthead-row">
+      <div>
+        <h1 class="nameplate"><?= htmlspecialchars($message) ?></h1>
+      </div>
+      <a class="btn ghost small" href="<?= htmlspecialchars($panel_url) ?>">back to the notebook</a>
+    </div>
+  </header>
+  <footer class="colophon">
+    <span>Nothing was sent.</span>
+  </footer>
+</div>
+</body>
+</html><?php
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
