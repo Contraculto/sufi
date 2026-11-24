@@ -280,6 +280,19 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 .thread { margin-top: .7rem; padding-left: .8rem; border-left: 2px solid var(--rule); }
 .thread-post { padding: .35rem 0; }
 .thread-post .kind { display: block; margin-bottom: .2rem; }
+.letter.group { border-left: 3px solid var(--rule); }
+.letter.group.unread { border-left-color: var(--stamp); }
+.group-parent { color: var(--ink-soft); font-size: .88rem; }
+.group-thread { margin-top: .55rem; }
+.letter.reply {
+    background: transparent;
+    border: none;
+    border-top: 1px dotted var(--rule);
+    box-shadow: none;
+    padding: .5rem 0 .4rem;
+    margin-bottom: 0;
+}
+.letter.reply .letter-actions { margin-top: .3rem; }
 
 .follow-form { margin-bottom: .4rem; }
 .directory { margin-bottom: 1.5rem; }
@@ -554,8 +567,7 @@ function renderInboxItem(item) {
     const unread = item.is_read ? '' : `<span class="dot" data-dot="${item.id}" title="unread"></span>`;
 
     const buttons = [];
-    if (item.reply_to) buttons.push(`<button class="btn ghost small" data-thread="${item.id}">thread</button>`);
-    if (item.kind === 'reply' || item.kind === 'mention') {
+    if (item.kind === 'mention') {
         buttons.push(`<button class="btn ghost small" data-reply="${esc(item.object_uri || '')}">reply</button>`);
     }
     if (!item.is_read) buttons.push(`<button class="btn ghost small" data-read="${item.id}">mark read</button>`);
@@ -579,8 +591,91 @@ function renderInboxItem(item) {
         </div>
         ${body}
         <div class="letter-actions">${buttons.join(' ')}</div>
-        <div class="thread" id="thread-${item.id}" style="display:none"></div>
     </article>`;
+}
+
+function renderInboxEntry(entry) {
+    return entry.type === 'group'
+        ? renderInboxGroup(entry)
+        : renderInboxItem(entry.item);
+}
+
+// A folded set of replies to one parent. All nesting ships inside the
+// payload: expanding is pure show/hide, no fetching.
+function renderInboxGroup(group, depth = 0) {
+    const newest = group.replies[group.replies.length - 1];
+    // Skip replies already rendered on a previous page of this view.
+    if (document.getElementById('inbox-g' + newest.id)) return '';
+    const unread = group.is_read ? '' : `<span class="dot" title="unread"></span>`;
+    const boxId  = `replies-${depth}-${newest.id}`;
+    const host   = esc(String(group.parent_uri).replace(/^https?:\/\//, '').split('/')[0]);
+
+    const parent = group.parent && group.parent.local
+        ? `<div class="letter-body group-parent">${esc(threadBody(group.parent.content)).slice(0, 300)}</div>`
+        : `<div class="letter-body muted">replying to ${host}</div>`;
+
+    return `<article class="letter group${group.is_read ? '' : ' unread'}" id="inbox-g${newest.id}">
+        <div class="letter-head">
+            <span class="stamp" aria-hidden="true">✎ ${group.count} ${group.count === 1 ? 'reply' : 'replies'}</span>
+            <time datetime="${esc(newest.created_at || '')}" title="${esc(fullDate(newest.created_at))}">${esc(ago(newest.created_at))}</time>
+            ${unread}
+        </div>
+        ${parent}
+        <div class="letter-actions"><button class="btn ghost small" data-group-toggle="${boxId}">replies</button></div>
+        <div class="thread group-thread" id="${boxId}" style="display:none">`
+            + group.replies.map(r => renderInboxReply(r, depth)).join('')
+        + `</div>
+    </article>`;
+}
+
+function renderInboxReply(reply, depth) {
+    // Skip replies already rendered on a previous page of this view.
+    if (document.getElementById('inbox-' + reply.id)) return '';
+    const handle = esc(reply.actor_handle || (reply.actor_uri || '').replace(/^https?:\/\//, ''));
+    const unread = reply.is_read ? '' : `<span class="dot" data-dot="${reply.id}" title="unread"></span>`;
+    const canNest = reply.has_children && depth < 3;
+    const boxId    = `replies-${depth + 1}-${reply.id}`;
+
+    const buttons = [
+        `<button class="btn ghost small" data-reply="${esc(reply.object_uri || '')}">reply</button>`,
+        `<button class="btn ghost small" data-delete="${reply.id}">delete</button>`,
+    ];
+    if (reply.object_uri) {
+        buttons.push(`<a class="btn ghost small" href="${esc(reply.object_uri)}" target="_blank" rel="noopener noreferrer">open</a>`);
+    }
+    if (canNest) {
+        buttons.push(`<button class="btn ghost small" data-group-toggle="${boxId}">replies</button>`);
+    }
+
+    const nested = canNest
+        ? `<div class="thread group-thread" id="${boxId}" style="display:none">`
+            + reply.children.replies.map(r => renderInboxReply(r, depth + 1)).join('')
+        + `</div>`
+        : '';
+
+    return `<div class="letter reply${reply.is_read ? '' : ' unread'}" id="inbox-${reply.id}">
+        <div class="letter-head">
+            <a class="who" href="${esc(reply.actor_uri || '')}" target="_blank" rel="noopener noreferrer">${handle}</a>
+            <time datetime="${esc(reply.created_at || '')}" title="${esc(fullDate(reply.created_at))}">${esc(ago(reply.created_at))}</time>
+            ${unread}
+        </div>
+        ${reply.preview ? `<div class="letter-body">${rich(reply.preview)}</div>` : ''}
+        <div class="letter-actions">${buttons.join(' ')}</div>
+        ${nested}
+    </div>`;
+}
+
+function indexReplyTree(reply) {
+    inboxById.set(reply.id, reply);
+    if (reply.children) {
+        for (const child of reply.children.replies) indexReplyTree(child);
+    }
+}
+
+function dropEmptyGroups() {
+    document.querySelectorAll('.letter.group').forEach(g => {
+        if (!g.querySelector('.letter.reply')) g.remove();
+    });
 }
 
 async function loadInbox(reset = true) {
@@ -602,16 +697,19 @@ async function loadInbox(reset = true) {
     inboxUnread = page.unread;
     updateInboxBadge();
 
-    for (const item of page.items) inboxById.set(item.id, item);
+    for (const entry of page.entries) {
+        if (entry.type === 'item') { inboxById.set(entry.item.id, entry.item); continue; }
+        for (const reply of entry.replies) indexReplyTree(reply);
+    }
 
-    const html = page.items.map(renderInboxItem).join('');
+    const html = page.entries.map(renderInboxEntry).join('');
 
     if (reset) {
         panel.innerHTML = '<div class="inbox-toolbar">'
             + '<button class="btn ghost small" onclick="clearReadInbox()">clear read</button>'
             + (inboxUnread ? '<button class="btn ghost small" onclick="markAllRead()">mark all read</button>' : '')
             + '</div>'
-            + (page.items.length ? '' : '<div class="empty">No letters. Quiet is fine.</div>')
+            + (page.entries.length ? '' : '<div class="empty">No letters. Quiet is fine.</div>')
             + html;
     } else {
         document.getElementById('inbox-more')?.remove();
@@ -629,10 +727,13 @@ async function loadInbox(reset = true) {
         b.dataset.wired = '1';
         b.addEventListener('click', () => replyTo(b.dataset.reply));
     });
-    panel.querySelectorAll('[data-thread]').forEach(b => {
+    panel.querySelectorAll('[data-group-toggle]').forEach(b => {
         if (b.dataset.wired) return;
         b.dataset.wired = '1';
-        b.addEventListener('click', () => toggleThread(Number(b.dataset.thread)));
+        b.addEventListener('click', () => {
+            const box = document.getElementById(b.dataset.groupToggle);
+            if (box) box.style.display = box.style.display === 'none' ? '' : 'none';
+        });
     });
     panel.querySelectorAll('[data-read]').forEach(b => {
         if (b.dataset.wired) return;
@@ -668,6 +769,7 @@ async function deleteInboxItem(id) {
     updateInboxBadge();
     inboxById.delete(id);
     document.getElementById(`inbox-${id}`)?.remove();
+    dropEmptyGroups();
     setStatus('deleted');
 }
 
@@ -684,6 +786,7 @@ async function clearReadInbox() {
             document.getElementById(`inbox-${id}`)?.remove();
         }
     });
+    dropEmptyGroups();
     setStatus('cleared read items');
 }
 
@@ -702,36 +805,6 @@ async function markAllRead() {
 function threadBody(html) {
     const text = String(html || '').replace(/<[^>]+>/g, ' ');
     return esc(text.replace(/\s+/g, ' ').trim());
-}
-
-async function toggleThread(id) {
-    const item = inboxById.get(id);
-    const box  = document.getElementById(`thread-${id}`);
-    if (!box || !item) return;
-
-    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
-    box.style.display = '';
-
-    if (!item.reply_to) return;
-
-    let parent = '';
-    if (item.reply_to.startsWith(BASE + '/ap/post/')) {
-        try {
-            const note = await fetch(item.reply_to, { headers: { Accept: 'application/activity+json' } }).then(r => r.json());
-            parent = note && note.content
-                ? `<div class="thread-post">
-                    <span class="kind">your entry · <a href="${esc(note.id || item.reply_to)}" target="_blank" rel="noopener noreferrer">open</a></span>
-                    <div class="entry-body">${threadBody(note.content)}</div>
-                </div>`
-                : `<div class="thread-post"><span class="kind">your entry · <a href="${esc(item.reply_to)}" target="_blank" rel="noopener noreferrer">open</a></span></div>`;
-        } catch (e) { /* parent is gone or unreachable */ }
-    } else {
-        parent = `<div class="thread-post"><span class="kind">replying to</span>
-            <a href="${esc(item.reply_to)}" target="_blank" rel="noopener noreferrer">${esc(item.reply_to)}</a></div>`;
-    }
-
-    box.innerHTML = parent;
-    if (!item.is_read) await markRead(id);
 }
 
 function replyTo(uri) {
