@@ -46,8 +46,8 @@ SUFI had no route for it (root cause of the reported 404: the router's
   - authed → resolve display handle (`acct:` stripped; URL → one guarded
     fetch for `preferredUsername` + URI host[:port], 400 if unresolvable or
     not an actor; handle → format check) → themed confirm page with a CSRF
-    token form (hidden `uri` field = resolved handle, action `""`,
-    method post) and a "not now" link to the panel.
+    token form (hidden `handle` field carrying the resolved handle, form
+    action `""`, method post) and a "not now" link to the panel.
 - `POST /authorize_interaction`
   - not authed → same login-stash redirect; bad/missing CSRF token → 403;
     bad handle format → 400.
