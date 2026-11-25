@@ -442,7 +442,9 @@ Cookie: PHPSESSID=...
 
 Returns a page of inbox entries plus the cursor and unread count. A
 top-level entry is either a plain item or a group of replies folded under
-the post they answer:
+the post they answer. When that post is itself an inbox item (a mention,
+say), the group rides on the item as `children` instead of appearing as a
+separate entry:
 
 ```json
 {
@@ -459,6 +461,8 @@ the post they answer:
         "reply_to": null,
         "preview": "hey @alice",
         "is_read": 0,
+        "has_children": true,
+        "children": { "...": "group of replies, when the post itself got answers" },
         "data": { "...": "raw activity" }
       }
     },
@@ -491,6 +495,8 @@ the post they answer:
 
 Replies to the same parent fold into a single group; `replies` are oldest
 first, and a reply that got answers of its own carries them in `children`.
+An item that is the parent of a group carries that group in `children`
+(with `has_children: true`) and sorts by its newest reply.
 `parent` resolves to the local post when the thread started here and is
 `{ "local": false }` for remote or unknown parents. A group's `is_read` is
 1 only once every reply in it has been read.

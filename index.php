@@ -484,6 +484,10 @@ function inbox_items() {
  * inside that reply instead of appearing at the top level. When the
  * parent reply sits on an earlier pagination page, its children are
  * picked up from stored inbox rows instead.
+ *
+ * A group whose parent is a top-level item in this payload (a remote post
+ * that mentioned you, say) attaches to that item as `children` instead of
+ * appearing on its own — the post card carries its thread.
  */
 function inbox_group_entries(array $items, string $base) {
     global $db_handler;
@@ -498,6 +502,16 @@ function inbox_group_entries(array $items, string $base) {
         } else {
             $entries[] = ['type' => 'item', 'item' => $item];
         }
+    }
+
+    // Top-level items a group can attach to, by object URI. Only posts can
+    // be reply parents; likes and boosts carry someone else's object URI.
+    $item_index = [];
+    foreach ($entries as $i => $entry) {
+        $item = $entry['item'];
+        if (!in_array($item['kind'] ?? '', ['mention', 'post'], true)) { continue; }
+        $uri = (string) ($item['object_uri'] ?? '');
+        if ($uri !== '') { $item_index[$uri] ??= $i; }
     }
 
     $make_group = function (string $uri, array $list) use ($db_handler, $local_prefix) {
@@ -549,7 +563,13 @@ function inbox_group_entries(array $items, string $base) {
     foreach ($by_parent as $uri => $list) {
         if (isset($nested[$uri])) { continue; }
         $group = $build($uri);
-        if ($group !== null) { $entries[] = $group; }
+        if ($group === null) { continue; }
+        if (isset($item_index[$uri])) {
+            $entries[$item_index[$uri]]['item']['has_children'] = true;
+            $entries[$item_index[$uri]]['item']['children']     = $group;
+            continue;
+        }
+        $entries[] = $group;
     }
 
     // A group emitted before its parent was built would reappear as a
@@ -559,9 +579,15 @@ function inbox_group_entries(array $items, string $base) {
         fn($e) => $e['type'] !== 'group' || !isset($nested[$e['parent_uri']])
     ));
 
-    // Newest activity first, same as the flat list it replaces.
+    // Newest activity first, same as the flat list it replaces. An item
+    // carrying a thread sorts by its newest reply, not its own arrival.
     $newest = function (array $entry) {
-        if ($entry['type'] === 'item') { return (int) $entry['item']['id']; }
+        if ($entry['type'] === 'item') {
+            $id = (int) $entry['item']['id'];
+            $replies = $entry['item']['children']['replies'] ?? [];
+            if ($replies) { $id = max($id, (int) $replies[count($replies) - 1]['id']); }
+            return $id;
+        }
         $replies = $entry['replies'];
         return (int) $replies[count($replies) - 1]['id'];
     };

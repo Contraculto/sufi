@@ -564,6 +564,10 @@ function renderInboxItem(item) {
     const handle = esc(item.actor_handle || actor.replace(/^https?:\/\//, ''));
     const unread = item.is_read ? '' : `<span class="dot" data-dot="${item.id}" title="unread"></span>`;
 
+    // A post in the inbox can carry its own thread of replies.
+    const canNest = item.has_children && item.children;
+    const boxId   = `replies-0-${item.id}`;
+
     const buttons = [];
     if (item.kind === 'mention') {
         buttons.push(`<button class="btn ghost small" data-reply="${esc(item.object_uri || '')}">reply</button>`);
@@ -573,6 +577,9 @@ function renderInboxItem(item) {
     if (item.object_uri) {
         buttons.push(`<a class="btn ghost small" href="${esc(item.object_uri)}" target="_blank" rel="noopener noreferrer">open</a>`);
     }
+    if (canNest) {
+        buttons.push(`<button class="btn ghost small" data-group-toggle="${boxId}">replies (${item.children.count})</button>`);
+    }
 
     // Likes and boosts carry no text of their own; say what happened.
     const quiet = { like: 'liked one of your entries.', boost: 'boosted one of your entries.' };
@@ -580,15 +587,25 @@ function renderInboxItem(item) {
         ? `<div class="letter-body">${rich(item.preview)}</div>`
         : (quiet[item.kind] ? `<div class="letter-body muted">${esc(quiet[item.kind])}</div>` : '');
 
+    const nested = canNest
+        ? `<div class="thread group-thread" id="${boxId}" style="display:none">`
+            + item.children.replies.map(r => renderInboxReply(r, 0)).join('')
+        + `</div>`
+        : '';
+    const threadUnread = canNest && !item.children.is_read
+        ? `<span class="dot" title="unread replies"></span>`
+        : '';
+
     return `<article class="letter${item.is_read ? '' : ' unread'}" id="inbox-${item.id}">
         <div class="letter-head">
             <span class="stamp" aria-hidden="true">${icon} ${esc(label)}</span>
             <a class="who" href="${esc(actor)}" target="_blank" rel="noopener noreferrer">${handle}</a>
             <time datetime="${esc(item.created_at || '')}" title="${esc(fullDate(item.created_at))}">${esc(ago(item.created_at))}</time>
-            ${unread}
+            ${unread}${threadUnread}
         </div>
         ${body}
         <div class="letter-actions">${buttons.join(' ')}</div>
+        ${nested}
     </article>`;
 }
 
@@ -674,6 +691,12 @@ function dropEmptyGroups() {
     document.querySelectorAll('.letter.group').forEach(g => {
         if (!g.querySelector('.letter.reply')) g.remove();
     });
+    // A thread attached to an item card leaves only its toggle behind.
+    document.querySelectorAll('.letter:not(.group) > .group-thread').forEach(t => {
+        if (t.querySelector('.letter.reply')) return;
+        document.querySelector(`[data-group-toggle="${t.id}"]`)?.remove();
+        t.remove();
+    });
 }
 
 async function loadInbox(reset = true) {
@@ -696,7 +719,13 @@ async function loadInbox(reset = true) {
     updateInboxBadge();
 
     for (const entry of page.entries) {
-        if (entry.type === 'item') { inboxById.set(entry.item.id, entry.item); continue; }
+        if (entry.type === 'item') {
+            inboxById.set(entry.item.id, entry.item);
+            if (entry.item.children) {
+                for (const reply of entry.item.children.replies) indexReplyTree(reply);
+            }
+            continue;
+        }
         for (const reply of entry.replies) indexReplyTree(reply);
     }
 

@@ -507,6 +507,25 @@ no('remote link text is host', !out.includes('>remote.example</a>'));
 no('group card missing', !out.includes('id="inbox-g13"'));
 no('nested reply missing', !out.includes('id="inbox-12"'));
 
+// An item carrying its own thread renders a toggle and the replies,
+// escaped like any other remote content.
+const mentionedItem = {
+    id: 31, kind: 'mention', actor_uri: 'https://evil.example/users/x',
+    actor_handle: '<img src=x onerror=alert(1)>', object_uri: 'https://evil.example/note/31',
+    preview: 'hello there', created_at: '2026-11-23 10:00:00', is_read: 0,
+    has_children: true,
+    children: { type: 'group', parent_uri: 'https://evil.example/note/31', count: 1, is_read: 0,
+        replies: [{ id: 32, actor_uri: 'https://evil.example/users/y', actor_handle: 'y@evil.example',
+            object_uri: 'https://evil.example/note/32', preview: '<script>alert(3)</script>',
+            created_at: '2026-11-23 11:00:00', is_read: 0, has_children: false }] },
+};
+const itemOut = renderInboxItem(mentionedItem);
+no('item thread toggle missing', !itemOut.includes('data-group-toggle="replies-0-31"'));
+no('item thread box missing', !itemOut.includes('id="replies-0-31"'));
+no('item thread reply missing', !itemOut.includes('id="inbox-32"'));
+no('item thread reply unescaped', /<script/i.test(itemOut));
+no('item handle not escaped', itemOut.includes('<img'));
+
 if (failures.length) {
     console.error('fixture failures: ' + failures.join('; '));
     process.exit(1);
@@ -1026,6 +1045,37 @@ foreach (json_body($r)['entries'] as $e) {
 }
 check('entity parent group found', true, $entity_group !== null);
 check('entity parent is plain text', 'salt & pepper', trim((string) ($entity_group['parent']['content'] ?? '')));
+
+// A remote post that is itself in the inbox (a mention) absorbs its
+// replies: one item entry carrying the thread, no standalone group card.
+$mention_uri = "{$remote}/notes/mentioned-1";
+expect('signed mentioned post', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#creates/mentioned-1",
+    'type'     => 'Create',
+    'actor'    => $actorU,
+    'object'   => [
+        'id'      => $mention_uri,
+        'type'    => 'Note',
+        'content' => '<p>hey <a href="' . $instance . '/ap/actor">@alice</a></p>',
+        'tag'     => [['type' => 'Mention', 'href' => "{$instance}/ap/actor", 'name' => '@alice']],
+    ],
+], $key, $keyId));
+expect('reply to mention one', 202, sign_post($inbox, $mk_reply('mention-r1', 'mention reply one', $mention_uri), $key, $keyId));
+expect('reply to mention two', 202, sign_post($inbox, $mk_reply('mention-r2', 'mention reply two', $mention_uri), $key, $keyId));
+
+$r = expect('mention thread inbox', 200, http('GET', "{$instance}/ap/inbox?limit=20", $auth_body, $auth_header));
+$mention_item  = null;
+$mention_group = null;
+foreach (json_body($r)['entries'] as $e) {
+    if ($e['type'] === 'item' && ($e['item']['object_uri'] ?? '') === $mention_uri) { $mention_item = $e['item']; }
+    if ($e['type'] === 'group' && ($e['parent_uri'] ?? '') === $mention_uri) { $mention_group = $e; }
+}
+check('mentioned post listed as item', true, $mention_item !== null);
+check('mention has no standalone group', true, $mention_group === null);
+check('item flags the thread', true, (bool) ($mention_item['has_children'] ?? false));
+check('item carries both replies', 2, (int) ($mention_item['children']['count'] ?? 0));
+check('item thread oldest first', true, str_contains((string) ($mention_item['children']['replies'][0]['preview'] ?? ''), 'mention reply one'));
 
 expect('signed Undo Like', 202, sign_post($inbox, [
     '@context' => 'https://www.w3.org/ns/activitystreams',
