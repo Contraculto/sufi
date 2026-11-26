@@ -101,6 +101,7 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 
   <nav class="tabs" aria-label="panel sections">
     <button class="tab active" id="tab-posts" onclick="switchTab('posts', this)">entries</button>
+    <button class="tab" id="tab-timeline" onclick="switchTab('timeline', this)">timeline</button>
     <button class="tab" id="tab-inbox" onclick="switchTab('inbox', this)">inbox</button>
     <button class="tab" id="tab-people" onclick="switchTab('people', this)">people</button>
     <button class="tab" id="tab-profile" onclick="switchTab('profile', this)">profile</button>
@@ -109,6 +110,7 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
   <div id="panel-posts">
     <div class="empty">opening the notebook…</div>
   </div>
+  <div id="panel-timeline" style="display:none"><div class="empty">opening the timeline…</div></div>
   <div id="panel-inbox" style="display:none"><div class="empty">opening the notebook…</div></div>
   <div id="panel-people" style="display:none"><div class="empty">opening the notebook…</div></div>
   <div id="panel-profile" style="display:none">
@@ -549,6 +551,7 @@ async function deletePost(guid) {
 const inboxById = new Map();
 let inboxCursor = null;
 let inboxUnread = 0;
+let timelineCursor = null;
 
 const inboxLabels = { like: 'like', boost: 'boost', reply: 'reply', mention: 'mention', post: 'post', other: 'activity' };
 const inboxIcons  = { like: '♥', boost: '↻', reply: '✎', mention: '@', post: '•', other: '•' };
@@ -569,7 +572,7 @@ function renderInboxItem(item) {
     const boxId   = `replies-0-${item.id}`;
 
     const buttons = [];
-    if (item.kind === 'mention') {
+    if (item.kind === 'mention' || item.kind === 'reply') {
         buttons.push(`<button class="btn ghost small" data-reply="${esc(item.object_uri || '')}">reply</button>`);
     }
     if (!item.is_read) buttons.push(`<button class="btn ghost small" data-read="${item.id}">mark read</button>`);
@@ -613,6 +616,53 @@ function renderInboxEntry(entry) {
     return entry.type === 'group'
         ? renderInboxGroup(entry)
         : renderInboxItem(entry.item);
+}
+
+// One line of context for a timeline entry: what it answers or boosts.
+function timelineContext(item) {
+    const host = uri => esc(String(uri || '').replace(/^https?:\/\//, '').split('/')[0]);
+    const parent = item.parent;
+
+    if (item.kind === 'reply' && item.reply_to) {
+        const excerpt = parent && parent.local ? parent.content : (parent && parent.preview);
+        const target = excerpt
+            ? `<span class="group-parent">${groupParentExcerpt(excerpt)}</span>`
+            : `<a href="${esc(item.reply_to)}" target="_blank" rel="noopener noreferrer">${host(item.reply_to)}</a>`;
+        return `<div class="letter-body muted">↳ replying to ${target}</div>`;
+    }
+    if (item.kind === 'boost' && item.object_uri) {
+        return `<div class="letter-body muted">↻ boosted a post from `
+            + `<a href="${esc(item.object_uri)}" target="_blank" rel="noopener noreferrer">${host(item.object_uri)}</a></div>`;
+    }
+    return '';
+}
+
+// Timeline cards are flat: every post and reply keeps its own text.
+function renderTimelineItem(item) {
+    const actor   = item.actor_uri || '';
+    const handle  = esc(item.actor_handle || actor.replace(/^https?:\/\//, ''));
+    const icon    = inboxIcons[item.kind] || '•';
+    const label   = inboxLabels[item.kind] || 'post';
+
+    const buttons = [];
+    if (item.kind === 'reply' || item.kind === 'mention') {
+        buttons.push(`<button class="btn ghost small" data-reply="${esc(item.object_uri || '')}">reply</button>`);
+    }
+    buttons.push(`<button class="btn ghost small" data-delete="${item.id}">hide</button>`);
+    if (item.object_uri) {
+        buttons.push(`<a class="btn ghost small" href="${esc(item.object_uri)}" target="_blank" rel="noopener noreferrer">open</a>`);
+    }
+
+    return `<article class="letter timeline" id="inbox-${item.id}">
+        <div class="letter-head">
+            <span class="stamp" aria-hidden="true">${icon} ${esc(label)}</span>
+            <a class="who" href="${esc(actor)}" target="_blank" rel="noopener noreferrer">${handle}</a>
+            <time datetime="${esc(item.created_at || '')}" title="${esc(fullDate(item.created_at))}">${esc(ago(item.created_at))}</time>
+        </div>
+        ${timelineContext(item)}
+        ${item.preview ? `<div class="letter-body">${rich(item.preview)}</div>` : ''}
+        <div class="letter-actions">${buttons.join(' ')}</div>
+    </article>`;
 }
 
 // A folded set of replies to one parent. All nesting ships inside the
@@ -736,7 +786,7 @@ async function loadInbox(reset = true) {
             + '<button class="btn ghost small" onclick="clearReadInbox()">clear read</button>'
             + (inboxUnread ? '<button class="btn ghost small" onclick="markAllRead()">mark all read</button>' : '')
             + '</div>'
-            + (page.entries.length ? '' : '<div class="empty">No letters. Quiet is fine.</div>')
+            + (page.entries.length ? '' : '<div class="empty">Nothing addressed to you yet. Mentions and replies to your posts land here.</div>')
             + html;
     } else {
         document.getElementById('inbox-more')?.remove();
@@ -775,6 +825,49 @@ async function loadInbox(reset = true) {
     });
 
     document.getElementById('inbox-more')?.addEventListener('click', () => loadInbox(false));
+}
+
+async function loadTimeline(reset = true) {
+    const panel = document.getElementById('panel-timeline');
+
+    if (reset) {
+        timelineCursor = null;
+        panel.innerHTML = '<div class="empty">opening the timeline…</div>';
+    }
+
+    let url = '/ap/timeline?limit=40';
+    if (timelineCursor) url += '&before_id=' + timelineCursor;
+
+    const page = await get(url);
+    if (!page) return;
+
+    const html = page.entries.map(renderTimelineItem).join('');
+
+    if (reset) {
+        panel.innerHTML = (page.entries.length ? '' : '<div class="empty">Nothing here yet. Follow people in the people tab and what they post will collect here.</div>') + html;
+    } else {
+        document.getElementById('timeline-more')?.remove();
+        panel.insertAdjacentHTML('beforeend', html);
+    }
+
+    timelineCursor = page.next_before_id;
+    if (timelineCursor) {
+        panel.insertAdjacentHTML('beforeend',
+            '<button id="timeline-more" class="btn ghost small" style="margin-top:.75rem">load more</button>');
+    }
+
+    panel.querySelectorAll('[data-reply]').forEach(b => {
+        if (b.dataset.wired) return;
+        b.dataset.wired = '1';
+        b.addEventListener('click', () => replyTo(b.dataset.reply));
+    });
+    panel.querySelectorAll('[data-delete]').forEach(b => {
+        if (b.dataset.wired) return;
+        b.dataset.wired = '1';
+        b.addEventListener('click', () => deleteInboxItem(Number(b.dataset.delete)));
+    });
+
+    document.getElementById('timeline-more')?.addEventListener('click', () => loadTimeline(false));
 }
 
 async function markRead(id) {
@@ -937,12 +1030,12 @@ async function unblockUser(uri) {
     if (r.ok) loadPeople();
 }
 
-const loaders = { posts: loadPosts, inbox: () => loadInbox(true), people: loadPeople, profile: () => {} };
+const loaders = { posts: loadPosts, timeline: () => loadTimeline(true), inbox: () => loadInbox(true), people: loadPeople, profile: () => {} };
 
 function switchTab(name, btn) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
-    ['posts','inbox','people','profile'].forEach(t => {
+    ['posts','timeline','inbox','people','profile'].forEach(t => {
         document.getElementById(`panel-${t}`).style.display = t === name ? '' : 'none';
     });
     loaders[name]();

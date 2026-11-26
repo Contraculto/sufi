@@ -49,6 +49,7 @@ sufi/
 ├── scripts/ops/restore.sh  # Verified restore (--yes required)
 ├── scripts/ops/health.php  # Health check (cron + deploy)
 ├── scripts/ops/prune.php   # Inbox retention
+├── scripts/ops/reclassify.php # Recompute inbox/timeline scope
 ├── scripts/ops/backfill.php # Fill actor_handle on old inbox rows
 ├── tests/                  # tests/run.php + fake remote server fixture
 └── .htaccess               # Apache rewrite rules
@@ -76,6 +77,7 @@ sufi/
 | Schema changes | bump `SCHEMA_VERSION` + add a migration in `init_schema()` |
 | Blocking or moderation | `inbox()` + `action_users()` in `index.php`, `Block` table |
 | Mentions / hashtags | `post_tags()` + `format_content()` in `index.php` |
+| Inbox vs timeline split | `inbox_classify()` in `sys/database.php`, storage in `inbox()` |
 
 ---
 

@@ -14,7 +14,7 @@ function connect_database() {
     }
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 function init_schema($DBH) {
     $version = (int) $DBH->query('PRAGMA user_version')->fetchColumn();
@@ -38,6 +38,15 @@ function init_schema($DBH) {
         // v4: post visibility + content warning
         add_column($DBH, 'Post', 'visibility', "TEXT NOT NULL DEFAULT 'public'");
         add_column($DBH, 'Post', 'summary', "TEXT NOT NULL DEFAULT ''");
+    }
+
+    if ($version < 5) {
+        // v5: split directed interactions (inbox) from followed-actor traffic
+        // (timeline), and keep the reply target as a queryable column.
+        add_column($DBH, 'InboxItem', 'scope', "TEXT NOT NULL DEFAULT 'inbox'");
+        add_column($DBH, 'InboxItem', 'parent_uri', "TEXT NOT NULL DEFAULT ''");
+        $DBH->exec('CREATE INDEX IF NOT EXISTS InboxItem_scope ON InboxItem (scope, id)');
+        $DBH->exec('CREATE INDEX IF NOT EXISTS InboxItem_parent ON InboxItem (parent_uri)');
     }
 
     $DBH->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
@@ -386,9 +395,9 @@ function update_post($DBH, $guid, $content, $data, $visibility = 'public', $summ
 
 // ── Inbox items ───────────────────────────────────────────────────────────────
 
-function get_inbox_items($DBH, $limit = 50, $before_id = null, $unread_only = false) {
-    $where  = [];
-    $params = [];
+function get_inbox_items($DBH, $limit = 50, $before_id = null, $unread_only = false, $scope = 'inbox') {
+    $where  = ['scope = ?'];
+    $params = [$scope];
 
     if ($unread_only) { $where[] = 'is_read = 0'; }
     if ($before_id !== null) {
@@ -409,23 +418,135 @@ function get_inbox_item($DBH, $id) {
     return $rows[0] ?? null;
 }
 
-function add_inbox_item($DBH, $type, $actor_uri, $object_uri, $data, $actor_handle = '') {
+function get_inbox_item_by_object($DBH, $object_uri) {
+    if ((string) $object_uri === '') { return null; }
+    $rows = get($DBH, "SELECT * FROM InboxItem WHERE object_uri = ? ORDER BY id LIMIT 1", [$object_uri]);
+    return $rows[0] ?? null;
+}
+
+function add_inbox_item($DBH, $type, $actor_uri, $object_uri, $data, $actor_handle = '', $scope = 'inbox', $parent_uri = '') {
     run($DBH,
-        "INSERT INTO InboxItem (type, actor_uri, actor_handle, object_uri, data) VALUES (?, ?, ?, ?, ?)",
-        [$type, $actor_uri, $actor_handle, $object_uri, json_encode($data)]
+        "INSERT INTO InboxItem (type, actor_uri, actor_handle, object_uri, data, scope, parent_uri)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [$type, $actor_uri, $actor_handle, $object_uri, json_encode($data), $scope, (string) $parent_uri]
     );
+}
+
+/**
+ * Everything below a directed item is part of that thread: promote stored
+ * children to the inbox, following the chain so out-of-order delivery
+ * still ends up whole. Returns the number of rows moved.
+ */
+function promote_inbox_thread($DBH, $object_uri) {
+    $pending = [(string) $object_uri];
+    $seen    = [];
+    $moved   = 0;
+
+    while ($pending) {
+        $uri = array_pop($pending);
+        if ($uri === '' || isset($seen[$uri])) { continue; }
+        $seen[$uri] = true;
+
+        $children = get($DBH,
+            "SELECT object_uri FROM InboxItem WHERE scope <> 'inbox' AND parent_uri = ?", [$uri]);
+        if (!$children) { continue; }
+
+        run($DBH, "UPDATE InboxItem SET scope = 'inbox' WHERE scope <> 'inbox' AND parent_uri = ?", [$uri]);
+        $moved += count($children);
+        foreach ($children as $child) { $pending[] = (string) $child['object_uri']; }
+    }
+
+    return $moved;
+}
+
+function inbox_parent_uri(array $activity) {
+    $object = $activity['object'] ?? null;
+    if (!is_array($object)) { return ''; }
+    $parent = $object['inReplyTo'] ?? null;
+    if (is_array($parent)) { $parent = $parent['id'] ?? null; }
+    return is_string($parent) ? $parent : '';
+}
+
+/**
+ * Decide what a verified incoming activity is to this single-user server:
+ *   ['inbox', $parent_uri]    aimed at us — mention, reply to our post, a
+ *                             reply in a thread we host, like/boost of ours
+ *   ['timeline', $parent_uri] traffic from people we follow or threads we
+ *                             already carry
+ *   ['drop', $parent_uri]     neither: do not store it at all
+ */
+function inbox_classify($DBH, array $activity, string $base_url) {
+    $type    = (string) ($activity['type'] ?? '');
+    $actor   = (string) ($activity['actor'] ?? '');
+    $object  = $activity['object'] ?? null;
+    $obj_uri = is_array($object) ? (string) ($object['id'] ?? '') : (is_string($object) ? $object : '');
+    $parent  = inbox_parent_uri($activity);
+
+    $actor_uri = $base_url . 'ap/actor';
+    $local     = fn(string $uri): bool => $uri !== '' && str_starts_with($uri, $base_url);
+
+    if ($type === 'Like' || $type === 'Announce') {
+        if ($local($obj_uri)) { return ['inbox', '']; }
+        if ($type === 'Announce' && $actor !== '' && get_following_actor($DBH, $actor)) {
+            return ['timeline', ''];
+        }
+        return ['drop', ''];
+    }
+
+    if ($type !== 'Create' || !is_array($object)) { return ['drop', $parent]; }
+
+    $tags      = is_array($object['tag'] ?? null) ? $object['tag'] : [];
+    $mentioned = false;
+    $followed  = false;
+    $addressed = false;
+
+    foreach ($tags as $tag) {
+        if (!is_array($tag) || ($tag['type'] ?? '') !== 'Mention') { continue; }
+        $href = (string) ($tag['href'] ?? '');
+        if ($href === $actor_uri) { $mentioned = true; }
+        if ($href !== '' && get_following_actor($DBH, $href)) { $followed = true; }
+    }
+
+    foreach (['to', 'cc'] as $field) {
+        $audience = $object[$field] ?? null;
+        foreach (is_array($audience) ? $audience : [] as $target) {
+            if (!is_string($target)) { continue; }
+            if ($target === $actor_uri || $target === $base_url . 'ap/followers') { $addressed = true; }
+        }
+    }
+
+    if ($mentioned || $addressed || ($parent !== '' && $local($parent))) {
+        return ['inbox', $parent];
+    }
+
+    // A reply to something we already keep directed is part of our thread.
+    if ($parent !== '') {
+        $row = get_inbox_item_by_object($DBH, $parent);
+        if ($row && ($row['scope'] ?? '') === 'inbox') { return ['inbox', $parent]; }
+    }
+
+    // Timeline: the author is someone we follow, the reply answers someone we
+    // follow, or the parent is a post we already carry. Anything with a reply
+    // target is kept even when the parent is unknown yet — it may be an
+    // out-of-order member of a thread we host, and promote_inbox_thread()
+    // fixes the scope once the parent lands.
+    if ($parent !== '' || $followed || ($actor !== '' && get_following_actor($DBH, $actor))) {
+        return ['timeline', $parent];
+    }
+
+    return ['drop', $parent];
 }
 
 function mark_inbox_read($DBH, $id = null) {
     if ($id === null) {
-        run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE is_read = 0");
+        run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE is_read = 0 AND scope = 'inbox'");
         return;
     }
     run($DBH, "UPDATE InboxItem SET is_read = 1 WHERE id = ?", [(int) $id]);
 }
 
 function count_unread_inbox($DBH) {
-    return (int) $DBH->query("SELECT COUNT(*) FROM InboxItem WHERE is_read = 0")->fetchColumn();
+    return (int) $DBH->query("SELECT COUNT(*) FROM InboxItem WHERE is_read = 0 AND scope = 'inbox'")->fetchColumn();
 }
 
 function delete_inbox_item($DBH, $id) {
@@ -433,7 +554,7 @@ function delete_inbox_item($DBH, $id) {
 }
 
 function delete_read_inbox($DBH) {
-    $STH = $DBH->prepare("DELETE FROM InboxItem WHERE is_read = 1");
+    $STH = $DBH->prepare("DELETE FROM InboxItem WHERE is_read = 1 AND scope = 'inbox'");
     $STH->execute();
     return $STH->rowCount();
 }

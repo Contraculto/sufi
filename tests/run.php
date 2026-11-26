@@ -408,7 +408,8 @@ check('panel BASE is instance root', true, str_contains($r[2], 'const BASE = ' .
 $csrf = token($r[2]);
 check('panel exposes csrf token', true, $csrf !== null);
 check('every tab button has an id', true,
-    str_contains($r[2], 'id="tab-posts"') && str_contains($r[2], 'id="tab-inbox"')
+    str_contains($r[2], 'id="tab-posts"') && str_contains($r[2], 'id="tab-timeline"')
+    && str_contains($r[2], 'id="tab-inbox"')
     && str_contains($r[2], 'id="tab-people"') && str_contains($r[2], 'id="tab-profile"'));
 
 $node = trim((string) @shell_exec('command -v node 2>/dev/null'));
@@ -525,6 +526,22 @@ no('item thread box missing', !itemOut.includes('id="replies-0-31"'));
 no('item thread reply missing', !itemOut.includes('id="inbox-32"'));
 no('item thread reply unescaped', /<script/i.test(itemOut));
 no('item handle not escaped', itemOut.includes('<img'));
+
+// Timeline cards are flat and must escape the same hostile remote input.
+const timelineItem = {
+    id: 41, kind: 'reply', actor_uri: 'https://evil.example/users/z',
+    actor_handle: '<script>alert(9)</script>', object_uri: 'x" onmouseover="alert(1)',
+    preview: '<img src=x onerror=alert(8)>', reply_to: 'https://remote.example/n?id=1&x=2',
+    created_at: '2026-11-24 08:00:00',
+    parent: { local: false, host: 'remote.example', preview: 'salt & <b>pepper</b>' },
+};
+const tlOut = renderTimelineItem(timelineItem);
+no('timeline handle unescaped', /<script/i.test(tlOut));
+no('timeline preview unescaped', tlOut.includes('<img'));
+no('timeline parent tag leaked', tlOut.includes('<b>'));
+no('timeline parent double escaped', tlOut.includes('&amp;lt;'));
+no('timeline reply context missing', !tlOut.includes('replying to'));
+no('timeline parent excerpt missing', !tlOut.includes('salt &amp; pepper'));
 
 if (failures.length) {
     console.error('fixture failures: ' + failures.join('; '));
@@ -745,20 +762,65 @@ $create_remote = [
     'object'   => ['id' => $note_uri, 'type' => 'Note', 'content' => 'hello from bob'],
 ];
 expect('signed Create', 202, sign_post($inbox, $create_remote, $key, $keyId));
-check('inbox item stored', 1, count(db($db_path, "SELECT * FROM InboxItem WHERE type = 'Create'")));
+// Not a mention, not a reply, and bob is not followed (yet): nothing to keep.
+check('unaddressed create is dropped', 0, count(db($db_path, "SELECT * FROM InboxItem WHERE type = 'Create'")));
 
 $hostport = parse_url($remote, PHP_URL_HOST) . ':' . parse_url($remote, PHP_URL_PORT);
 $auth_header = ['Content-Type: application/json'];
 $auth_body   = json_encode(['password' => 'testpass']);
 
-$r = expect('inbox listing', 200, http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header));
-$inbox_page = json_body($r);
-check('inbox response has entries and unread', true, isset($inbox_page['entries'], $inbox_page['unread']));
-$first = $inbox_page['entries'][0]['item'] ?? [];
-check('inbox item has readable handle', '@bob@' . $hostport, $first['actor_handle'] ?? null);
-check('inbox item kind is post', 'post', $first['kind'] ?? null);
-check('inbox item has preview', true, str_contains((string) ($first['preview'] ?? ''), 'hello from bob'));
-check('inbox item starts unread', 0, (int) ($first['is_read'] ?? 1));
+$r = expect('empty inbox listing', 200, http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header));
+check('inbox response has entries and unread', true, isset(json_body($r)['entries'], json_body($r)['unread']));
+check('dropped create is not in the inbox', false,
+    str_contains(json_encode(json_body($r)['entries']), 'hello from bob'));
+
+// Follow bob: now what he posts belongs in the timeline, not the inbox.
+db($db_path, "INSERT OR REPLACE INTO Following (actor_uri, inbox, data) VALUES (?, ?, ?)",
+    [$actorU, "{$remote}/inbox", json_encode(['preferredUsername' => 'bob', 'name' => 'Bob'])]);
+
+$create_timeline = $create_remote;
+$create_timeline['id'] = "{$actorU}#creates/2";
+$create_timeline['object']['id'] = "{$remote}/notes/timeline-1";
+expect('followed create', 202, sign_post($inbox, $create_timeline, $key, $keyId));
+
+$r = expect('timeline listing', 200, http('GET', "{$instance}/ap/timeline", $auth_body, $auth_header));
+$timeline_page = json_body($r);
+check('timeline response has entries', true, isset($timeline_page['entries']));
+$first = $timeline_page['entries'][0] ?? [];
+check('timeline item has readable handle', '@bob@' . $hostport, $first['actor_handle'] ?? null);
+check('timeline item kind is post', 'post', $first['kind'] ?? null);
+check('timeline item has preview', true, str_contains((string) ($first['preview'] ?? ''), 'hello from bob'));
+$r = expect('inbox after timeline', 200, http('GET', "{$instance}/ap/inbox", $auth_body, $auth_header));
+check('timeline post stays out of the inbox', false,
+    str_contains(json_encode(json_body($r)['entries']), 'hello from bob'));
+expect('timeline without auth', 401, http('GET', "{$instance}/ap/timeline"));
+
+// A reply inside a thread we carry (bob answers his own post) is timeline
+// traffic, and the parent we already hold supplies an excerpt.
+expect('reply in followed thread', 202, sign_post($inbox, [
+    '@context' => 'https://www.w3.org/ns/activitystreams',
+    'id'       => "{$actorU}#creates/tl-reply-1",
+    'type'     => 'Create',
+    'actor'    => $actorU,
+    'object'   => [
+        'id'        => "{$remote}/notes/tl-reply-1",
+        'type'      => 'Note',
+        'content'   => '<p>answering my own post</p>',
+        'inReplyTo' => "{$remote}/notes/timeline-1",
+    ],
+], $key, $keyId));
+
+$r = expect('timeline after thread reply', 200, http('GET', "{$instance}/ap/timeline?limit=5", $auth_body, $auth_header));
+$tl_thread = null;
+foreach (json_body($r)['entries'] as $e) {
+    if (str_contains((string) ($e['preview'] ?? ''), 'answering my own post')) { $tl_thread = $e; }
+}
+check('thread reply listed in timeline', true, $tl_thread !== null);
+check('timeline reply is a reply kind', 'reply', $tl_thread['kind'] ?? null);
+check('timeline parent resolves to stored post', true,
+    str_contains((string) ($tl_thread['parent']['preview'] ?? ''), 'hello from bob'));
+check('thread reply stays out of the inbox', 0,
+    count(db($db_path, "SELECT * FROM InboxItem WHERE scope = 'inbox' AND object_uri = ?", ["{$remote}/notes/tl-reply-1"])));
 
 // Classification: reply, mention, boost, like.
 $reply_create = [
@@ -890,15 +952,13 @@ expect('reply fold orphan', 202, sign_post($inbox, $mk_reply('fold-4', 'orphan f
 
 $r = expect('folded inbox', 200, http('GET', "{$instance}/ap/inbox?limit=20", $auth_body, $auth_header));
 $entries = json_body($r)['entries'];
-check('a page of only replies folds to two groups', 2, count($entries));
+check('a page of only replies folds to one group', 1, count($entries));
 check('no standalone items on reply page', 0, count(array_filter($entries, fn($e) => $e['type'] === 'item')));
 
 $thread = null;
-$orphan = null;
 foreach ($entries as $e) {
     if ($e['type'] !== 'group') { continue; }
     if ($e['parent_uri'] === $parent_uri) { $thread = $e; }
-    if ($e['parent_uri'] === "{$remote}/notes/never-seen") { $orphan = $e; }
 }
 check('thread group found', true, $thread !== null);
 check('thread group count', 2, (int) ($thread['count'] ?? 0));
@@ -911,8 +971,28 @@ check('first reply has children', true, (bool) ($thread['replies'][0]['has_child
 check('nested group reply count', 1, (int) ($thread['replies'][0]['children']['count'] ?? 0));
 check('nested reply preview', true, str_contains((string) ($thread['replies'][0]['children']['replies'][0]['preview'] ?? ''), 'nested fold'));
 check('second reply has no children', true, empty($thread['replies'][1]['has_children']));
-check('orphan group found', true, $orphan !== null);
-check('orphan parent is remote', false, (bool) ($orphan['parent']['local'] ?? true));
+
+// A reply to a note we never saw is not ours: it waits in the timeline.
+$r = expect('orphan in timeline', 200, http('GET', "{$instance}/ap/timeline?limit=20", $auth_body, $auth_header));
+$orphan_timeline = null;
+foreach (json_body($r)['entries'] as $e) {
+    if (str_contains((string) ($e['preview'] ?? ''), 'orphan fold')) { $orphan_timeline = $e; }
+}
+check('orphan reply kept in timeline', true, $orphan_timeline !== null);
+check('orphan timeline parent is remote', false, (bool) ($orphan_timeline['parent']['local'] ?? true));
+check('orphan reply not in the inbox', 0,
+    count(db($db_path, "SELECT * FROM InboxItem WHERE scope = 'inbox' AND object_uri = ?", ["{$remote}/notes/fold-4"])));
+
+// Timeline pagination walks the same cursor contract as the inbox.
+$r = expect('timeline page one', 200, http('GET', "{$instance}/ap/timeline?limit=1", $auth_body, $auth_header));
+$tl_page1 = json_body($r);
+check('timeline page holds one', 1, count($tl_page1['entries']));
+check('timeline exposes cursor', true, !empty($tl_page1['next_before_id']));
+$r = expect('timeline page two', 200,
+    http('GET', "{$instance}/ap/timeline?limit=1&before_id=" . $tl_page1['next_before_id'], $auth_body, $auth_header));
+$tl_page2 = json_body($r);
+check('timeline cursor returns the next entry', true,
+    (int) ($tl_page2['entries'][0]['id'] ?? 0) < (int) ($tl_page1['entries'][0]['id'] ?? 0));
 
 // Pagination consumes folded rows: limit=2 over four replies gives one page
 // of two groups, and the cursor lands on the oldest consumed reply.
@@ -926,7 +1006,7 @@ check('cursor is oldest consumed reply', (int) $page1['next_before_id'],
 $r = expect('fold page two', 200, http('GET', "{$instance}/ap/inbox?unread=1&limit=2&before_id=" . $page1['next_before_id'], $auth_body, $auth_header));
 $page2 = json_body($r);
 check('fold page two has one group', 1, count($page2['entries']));
-check('page two group count', 2, (int) ($page2['entries'][0]['count'] ?? 0));
+check('page two group count', 1, (int) ($page2['entries'][0]['count'] ?? 0));
 check('page two carries nested reply', 1, (int) ($page2['entries'][0]['replies'][0]['children']['count'] ?? 0));
 check('fold pages exhausted', true, empty($page2['next_before_id']));
 
@@ -983,6 +1063,9 @@ $self_uri = "{$remote}/notes/self-ref";
 $self_ref = $mk_reply('self-ref', 'self referential', $self_uri);
 $self_ref['object']['id'] = $self_uri;
 expect('self-referential reply', 202, sign_post($inbox, $self_ref, $key, $keyId));
+// It is timeline traffic (a self-loop answers nobody); put it in the inbox
+// by hand so the cycle guard is exercised regardless of delivery rules.
+db($db_path, "UPDATE InboxItem SET scope = 'inbox' WHERE object_uri = ?", [$self_uri]);
 
 $count_note = function (array $group) use (&$count_note, $self_uri) {
     $n = 0;
@@ -1108,7 +1191,7 @@ expect('signed Undo Follow', 202, sign_post($inbox, [
 check('follower removed', 0, count(db($db_path, 'SELECT * FROM Follower')));
 
 // Unfollowing from the panel works by actor URI: no webfinger round-trip.
-db($db_path, "INSERT INTO Following (actor_uri, inbox, data) VALUES (?, ?, ?)",
+db($db_path, "INSERT OR REPLACE INTO Following (actor_uri, inbox, data) VALUES (?, ?, ?)",
     [$actorU, "{$remote}/inbox", json_encode(['preferredUsername' => 'bob', 'name' => 'Bob'])]);
 
 $r = expect('people lists following', 200, http('GET', "{$instance}/ap/people",
@@ -1412,9 +1495,31 @@ check('follower page size respected', (int) ceil($total / 2), $pages);
 section('Maintenance');
 
 $schema = db($db_path, 'PRAGMA user_version');
-check('schema version', 4, (int) ($schema[0]['user_version'] ?? 0));
+check('schema version', 5, (int) ($schema[0]['user_version'] ?? 0));
 $columns = array_column(db($db_path, 'PRAGMA table_info(InboxItem)'), 'name');
 check('inbox read column exists', true, in_array('is_read', $columns, true));
+check('inbox scope columns exist', true,
+    in_array('scope', $columns, true) && in_array('parent_uri', $columns, true));
+
+// Reclassification puts a directed activity back in the inbox even if it was
+// stored before the split (or under older rules).
+$reclass_uri = "{$remote}/notes/reclass-1";
+db($db_path, "INSERT INTO InboxItem (type, actor_uri, object_uri, data, scope, parent_uri)
+        VALUES ('Create', ?, ?, ?, 'timeline', '')",
+    [$actorU, $reclass_uri, json_encode([
+        'type'   => 'Create',
+        'actor'  => $actorU,
+        'object' => [
+            'id'      => $reclass_uri,
+            'type'    => 'Note',
+            'content' => '<p>directed after all</p>',
+            'tag'     => [['type' => 'Mention', 'href' => "{$instance}/ap/actor", 'name' => '@alice']],
+        ],
+    ])]);
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/reclassify.php') . ' 2>&1', $out, $code);
+check('reclassify exits cleanly', 0, $code);
+$reclass = db($db_path, 'SELECT scope FROM InboxItem WHERE object_uri = ?', [$reclass_uri]);
+check('reclassify restores directed scope', 'inbox', $reclass[0]['scope'] ?? null);
 
 $root_dir = dirname(dirname($db_path));
 db($db_path, "INSERT INTO InboxItem (type, actor_uri, data, created_at) VALUES ('Create', 'https://old.example/u/x', '{}', datetime('now', '-200 days'))");

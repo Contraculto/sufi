@@ -29,7 +29,7 @@ CHECK=0
 # if something is missing.
 APP_FILES=(index.php .htaccess README.md LICENSE AGENTS.md templates deploy)
 SYS_FILES=(sys/database.php sys/sufi.sql sys/delivery.php)
-OPS_FILES=(deliver.php health.php backup.sh restore.sh prune.php backfill.php)
+OPS_FILES=(deliver.php health.php backup.sh restore.sh prune.php backfill.php reclassify.php)
 
 for arg in "$@"; do
     case "$arg" in

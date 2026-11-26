@@ -74,6 +74,7 @@ scripts/
   ops/backup.sh    daily SQLite backup (keeps the last 14)
   ops/restore.sh   restore a backup (verified, --yes required)
   ops/prune.php    drops inbox items older than $inbox_retention_days
+  ops/reclassify.php  recompute inbox/timeline scope for stored items
 templates/
   actor.php        builds Actor JSON
   webfinger.php    builds WebFinger JSON
@@ -100,6 +101,7 @@ deploy/
 | `Following` | Everyone you follow |
 | `Post` | Your notes/posts |
 | `Like` | Objects you have liked |
+| `InboxItem` | Received activities. `scope = 'inbox'` means it was aimed at you (mention, reply to your post, like or boost of your post); `scope = 'timeline'` means it came from someone you follow. `parent_uri` holds the `inReplyTo` target |
 | `Block` | Actors you blocked (enforced in the inbox) |
 | `Delivery` | Queued outgoing activities and retry state |
 
@@ -294,6 +296,16 @@ It defaults to `contraculto.com:/var/www/contraculto/sufi`; override with
 `CONTRACULTO_DEPLOY_HOST` and `SUFI_REMOTE_DIR`. On the server the panel lives
 at `/sufi/`, while the activity URLs stay at the domain root.
 
+After upgrading past schema v5 (the inbox/timeline split), classify the rows you
+already have once:
+
+```bash
+php scripts/ops/reclassify.php --dry-run   # report what would move
+php scripts/ops/reclassify.php             # apply
+```
+
+It is safe to re-run and never deletes history.
+
 ---
 
 ## API
@@ -307,7 +319,7 @@ Two methods are supported:
 1. **Session cookie** — log in through the panel at `/sufi/` and use the returned cookie for all requests. This is what the web panel uses.
 2. **Password in request body** — include `password=your-secret` in POST form data or JSON for write endpoints.
 
-Read-only endpoints (`GET /ap/post`, `GET /ap/inbox`) require a session cookie. Write endpoints accept either method.
+Read-only endpoints (`GET /ap/post`, `GET /ap/inbox`, `GET /ap/timeline`) require a session cookie. Write endpoints accept either method.
 
 ### Create a post
 
@@ -435,6 +447,11 @@ the daily prune once they are a day old.
 
 ### Inbox
 
+The inbox holds interactions aimed at you: mentions, replies to your posts,
+replies further down a thread you started, and likes or boosts of your notes.
+Posts from accounts you follow go to the [timeline](#timeline) instead, and
+activities aimed at neither are acknowledged with `202` and not stored.
+
 ```
 GET /ap/inbox?limit=50&before_id=<id>
 Cookie: PHPSESSID=...
@@ -532,6 +549,42 @@ Older rows may have an empty `actor_handle`. Fill them in once after upgrading:
 ```bash
 php scripts/ops/backfill.php        # 200 actors per run, safe to re-run
 ```
+
+### Timeline
+
+```
+GET /ap/timeline?limit=40&before_id=<id>
+Cookie: PHPSESSID=...
+```
+
+The home timeline: posts, replies and boosts from the accounts you follow,
+newest first. Entries are flat — each one carries its own `preview` — and a
+reply also carries `parent` with whatever context is local:
+
+```json
+{
+  "entries": [
+    {
+      "id": 477,
+      "kind": "reply",
+      "actor_handle": "@someone@mastodon.social",
+      "object_uri": "https://mastodon.social/users/someone/statuses/1",
+      "preview": "a reply in a thread you follow",
+      "reply_to": "https://mastodon.social/users/Mastodon/statuses/2",
+      "parent": { "local": false, "host": "mastodon.social", "preview": "the post being answered" }
+    }
+  ],
+  "next_before_id": 471
+}
+```
+
+`parent` resolves to `{ "local": true, "content": ... }` when the parent is one
+of your posts, to `{ "local": false, "host": ..., "preview": ... }` when the
+post being answered is one we already hold, and to just the host otherwise.
+No outbound fetch happens to build it.
+
+Rows in the timeline are not unread and are not counted by the inbox badge.
+`POST /ap/inbox/delete` with an item id hides a timeline entry as well.
 
 ### Followers and following
 

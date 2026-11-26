@@ -120,6 +120,10 @@ switch ($request) {
         if ($_SERVER['REQUEST_METHOD'] === 'POST') { delete_inbox_endpoint(); }
         break;
 
+    case "/ap/timeline":
+        timeline_items();
+        break;
+
     case "/ap/outbox":
         require __DIR__ . "/templates/outbox.php";
         header("Content-Type: application/activity+json; charset=utf-8");
@@ -372,18 +376,37 @@ function inbox() {
         die();
     }
 
-    // Store incoming interactions (all verified at this point)
+    // Store incoming interactions (all verified at this point). What we keep
+    // depends on whom it is for: directed traffic goes to the inbox, followed
+    // accounts and the threads they start go to the timeline, and anything
+    // aimed at neither is acknowledged and dropped.
     if (in_array($type, ["Create", "Announce", "Like"], true)) {
         $obj     = $body["object"] ?? null;
         $obj_uri = is_array($obj) ? ($obj["id"] ?? null) : (is_string($obj) ? $obj : null);
 
-        if ($type === "Like" && is_string($obj_uri) && $obj_uri !== '') {
+        [$scope, $parent_uri] = System\Database\inbox_classify($db_handler, $body, (string) $base_url);
+
+        if ($scope === 'drop') {
+            http_response_code(202);
+            die();
+        }
+
+        if ($type === "Like" && $scope === 'inbox' && is_string($obj_uri) && $obj_uri !== '') {
             System\Database\add_like($db_handler, $obj_uri, $actor_uri);
         }
+
         System\Database\add_inbox_item(
             $db_handler, $type, $actor_uri, $obj_uri, $body,
-            actor_handle($actor_uri, $GLOBALS['sufi_actor'] ?? [])
+            actor_handle($actor_uri, $GLOBALS['sufi_actor'] ?? []),
+            $scope, $parent_uri
         );
+
+        // Replies that arrived before their parent are still ours when the
+        // parent turns out to be directed: pull the whole chain in.
+        if ($scope === 'inbox' && is_string($obj_uri) && $obj_uri !== '') {
+            System\Database\promote_inbox_thread($db_handler, $obj_uri);
+        }
+
         http_response_code(202);
         die();
     }
@@ -436,6 +459,45 @@ function inbox() {
     // Everything else is accepted and ignored — SUFI is a publishing server.
     http_response_code(202);
     die();
+}
+
+/**
+ * Home timeline: posts and replies from the accounts we follow, newest
+ * first. Flat on purpose — a timeline entry carries its own text, unlike an
+ * inbox group card that stands in for a thread.
+ */
+function timeline_items() {
+    global $db_handler, $base_url;
+
+    if (!panel_auth()) {
+        http_response_code(401);
+        echo "Unauthorized";
+        return;
+    }
+
+    $limit  = min(100, max(1, (int) ($_GET['limit'] ?? 40)));
+    $before = isset($_GET['before_id']) ? (int) $_GET['before_id'] : null;
+
+    $rows = System\Database\get_inbox_items($db_handler, $limit + 1, $before, false, 'timeline');
+    $more = count($rows) > $limit;
+    if ($more) { array_pop($rows); }
+
+    $entries = [];
+    foreach ($rows as $row) {
+        $item = inbox_enrich_item($row);
+        $item['parent'] = ($item['reply_to'] ?? '') !== ''
+            ? inbox_parent_summary($db_handler, (string) $item['reply_to'], $base_url . 'ap/post/')
+            : null;
+        $entries[] = $item;
+    }
+
+    $next = ($more && $entries) ? (int) $entries[count($entries) - 1]['id'] : null;
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'entries'        => $entries,
+        'next_before_id' => $next,
+    ]);
 }
 
 function inbox_items() {
@@ -504,12 +566,13 @@ function inbox_group_entries(array $items, string $base) {
         }
     }
 
-    // Top-level items a group can attach to, by object URI. Only posts can
-    // be reply parents; likes and boosts carry someone else's object URI.
+    // Top-level items a group can attach to, by object URI. Replies and
+    // mentions can be parents too; likes and boosts carry someone else's
+    // object URI, so they are not.
     $item_index = [];
     foreach ($entries as $i => $entry) {
         $item = $entry['item'];
-        if (!in_array($item['kind'] ?? '', ['mention', 'post'], true)) { continue; }
+        if (!in_array($item['kind'] ?? '', ['mention', 'post', 'reply'], true)) { continue; }
         $uri = (string) ($item['object_uri'] ?? '');
         if ($uri !== '') { $item_index[$uri] ??= $i; }
     }
@@ -615,7 +678,16 @@ function inbox_parent_summary($db_handler, string $uri, string $local_prefix) {
             ];
         }
     }
-    return ['local' => false];
+
+    // A parent we already hold (a followed account's post, say) gives the
+    // panel an excerpt without any outbound fetch.
+    $summary = ['local' => false, 'host' => (string) (parse_url($uri, PHP_URL_HOST) ?? '')];
+    $row = System\Database\get_inbox_item_by_object($db_handler, $uri);
+    if ($row) {
+        $data = json_decode((string) $row['data'], true) ?: [];
+        $summary['preview'] = inbox_preview($data);
+    }
+    return $summary;
 }
 
 /**
