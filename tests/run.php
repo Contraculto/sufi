@@ -1521,6 +1521,32 @@ check('reclassify exits cleanly', 0, $code);
 $reclass = db($db_path, 'SELECT scope FROM InboxItem WHERE object_uri = ?', [$reclass_uri]);
 check('reclassify restores directed scope', 'inbox', $reclass[0]['scope'] ?? null);
 
+// Regression: a parent still carrying the migration default must not drag
+// its reply into the inbox. Both are timeline traffic from a stranger.
+$pending_parent = "{$remote}/notes/pending-parent";
+$pending_child  = "{$remote}/notes/pending-child";
+$stranger_data  = fn(string $id, string $content, string $parent = '') => json_encode(array_filter([
+    'type'   => 'Create',
+    'actor'  => 'https://stranger.example/u/x',
+    'object' => array_filter([
+        'id'        => $id,
+        'type'      => 'Note',
+        'content'   => $content,
+        'inReplyTo' => $parent,
+    ]),
+]));
+db($db_path, "INSERT INTO InboxItem (type, actor_uri, object_uri, data, scope, parent_uri)
+        VALUES ('Create', 'https://stranger.example/u/x', ?, ?, 'inbox', '')",
+    [$pending_parent, $stranger_data($pending_parent, 'pending parent')]);
+db($db_path, "INSERT INTO InboxItem (type, actor_uri, object_uri, data, scope, parent_uri)
+        VALUES ('Create', 'https://stranger.example/u/x', ?, ?, 'inbox', '')",
+    [$pending_child, $stranger_data($pending_child, 'pending child', $pending_parent)]);
+exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/reclassify.php') . ' 2>&1', $out, $code);
+$pending = array_column(
+    db($db_path, 'SELECT scope FROM InboxItem WHERE object_uri IN (?, ?) ORDER BY id',
+        [$pending_parent, $pending_child]), 'scope');
+check('reclassify demotes stranger thread to timeline', ['timeline', 'timeline'], $pending);
+
 $root_dir = dirname(dirname($db_path));
 db($db_path, "INSERT INTO InboxItem (type, actor_uri, data, created_at) VALUES ('Create', 'https://old.example/u/x', '{}', datetime('now', '-200 days'))");
 $old_count = count(db($db_path, 'SELECT * FROM InboxItem'));

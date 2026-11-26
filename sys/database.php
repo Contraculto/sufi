@@ -475,7 +475,7 @@ function inbox_parent_uri(array $activity) {
  *                             already carry
  *   ['drop', $parent_uri]     neither: do not store it at all
  */
-function inbox_classify($DBH, array $activity, string $base_url) {
+function inbox_classify($DBH, array $activity, string $base_url, ?callable $parent_scope = null) {
     $type    = (string) ($activity['type'] ?? '');
     $actor   = (string) ($activity['actor'] ?? '');
     $object  = $activity['object'] ?? null;
@@ -521,8 +521,13 @@ function inbox_classify($DBH, array $activity, string $base_url) {
 
     // A reply to something we already keep directed is part of our thread.
     if ($parent !== '') {
-        $row = get_inbox_item_by_object($DBH, $parent);
-        if ($row && ($row['scope'] ?? '') === 'inbox') { return ['inbox', $parent]; }
+        $parent_scope_value = $parent_scope
+            ? $parent_scope($parent)
+            : (function () use ($DBH, $parent): ?string {
+                $row = get_inbox_item_by_object($DBH, $parent);
+                return $row ? (string) ($row['scope'] ?? '') : null;
+            })();
+        if ($parent_scope_value === 'inbox') { return ['inbox', $parent]; }
     }
 
     // Timeline: the author is someone we follow, the reply answers someone we

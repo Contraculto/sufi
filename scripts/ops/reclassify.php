@@ -22,59 +22,76 @@ require $root . '/sys/database.php';
 $db  = SUFI\System\Database\connect_database();
 $dry = in_array('--dry-run', $argv ?? [], true) || in_array('-n', $argv ?? [], true);
 
-$counts = ['inbox' => 0, 'timeline' => 0, 'drop' => 0];
-$rows   = SUFI\System\Database\get($db, "SELECT * FROM InboxItem ORDER BY id");
+$rows = SUFI\System\Database\get($db, "SELECT * FROM InboxItem ORDER BY id");
+
+// Decide everything in memory first, oldest first: a row's scope depends on
+// the scope of its parent, and the column still holds old values while we
+// work. A parent stored later (out-of-order delivery) is unknown at this
+// point and lands in the timeline; the promotion pass below fixes it.
+$decided    = [];  // object_uri => 'inbox'|'timeline'
+$parents    = [];  // id => parent_uri
+$new_scope  = [];  // id => scope
+$parent_of  = fn(string $uri): ?string => $decided[$uri] ?? null;
 
 foreach ($rows as $row) {
     $data = json_decode((string) $row['data'], true) ?: [];
 
     $parent = SUFI\System\Database\inbox_parent_uri($data);
-    [$scope] = SUFI\System\Database\inbox_classify($db, $data, (string) $base_url);
+    [$scope] = SUFI\System\Database\inbox_classify($db, $data, (string) $base_url, $parent_of);
 
     // History is never dropped by a reclassification.
     if ($scope === 'drop') { $scope = 'timeline'; }
 
+    $parents[(int) $row['id']]   = $parent;
+    $new_scope[(int) $row['id']] = $scope;
+
+    $uri = (string) ($row['object_uri'] ?? '');
+    if ($uri !== '') { $decided[$uri] = $scope; }
+}
+
+// Out-of-order delivery: a reply stored before the directed post it answers
+// belongs to that thread too. Promote in memory until nothing changes.
+$passes = 0;
+do {
+    $changed = 0;
+    foreach ($rows as $row) {
+        $id     = (int) $row['id'];
+        $parent = $parents[$id];
+        if ($new_scope[$id] === 'inbox' || $parent === '') { continue; }
+        if (($decided[$parent] ?? null) !== 'inbox') { continue; }
+
+        $new_scope[$id] = 'inbox';
+        $uri = (string) ($row['object_uri'] ?? '');
+        if ($uri !== '') { $decided[$uri] = 'inbox'; }
+        $changed++;
+    }
+    $passes++;
+} while ($changed > 0 && $passes < 20);
+
+$counts = ['inbox' => 0, 'timeline' => 0];
+$moved  = 0;
+
+foreach ($rows as $row) {
+    $id     = (int) $row['id'];
+    $scope  = $new_scope[$id];
+    $parent = $parents[$id];
     $counts[$scope]++;
 
     if ($scope === (string) ($row['scope'] ?? '') && $parent === (string) ($row['parent_uri'] ?? '')) {
         continue;
     }
+    $moved++;
 
     if (!$dry) {
         SUFI\System\Database\run($db,
             "UPDATE InboxItem SET scope = ?, parent_uri = ? WHERE id = ?",
-            [$scope, $parent, (int) $row['id']]
+            [$scope, $parent, $id]
         );
     }
 }
 
-// Out-of-order delivery: a reply stored before the directed post it answers
-// belongs to that thread too. One UPDATE per pass, repeated until stable.
-$passes = 0;
-if (!$dry) {
-    do {
-        $promoted = $db->exec(
-            "UPDATE InboxItem SET scope = 'inbox'
-             WHERE scope <> 'inbox'
-               AND parent_uri <> ''
-               AND parent_uri IN (SELECT object_uri FROM InboxItem
-                                  WHERE scope = 'inbox' AND object_uri IS NOT NULL AND object_uri <> '')"
-        );
-        $passes++;
-    } while ($promoted > 0 && $passes < 20);
-}
-
-$final = ['inbox' => 0, 'timeline' => 0];
-foreach (SUFI\System\Database\get($db, "SELECT scope, COUNT(*) AS n FROM InboxItem GROUP BY scope") as $row) {
-    $final[(string) $row['scope']] = (int) $row['n'];
-}
-
 printf("inbox items: %d total\n", count($rows));
-printf("  classified inbox:    %d\n", $counts['inbox']);
-printf("  classified timeline: %d\n", $counts['timeline']);
-if ($counts['drop'] > 0) {
-    printf("  kept as timeline instead of dropping: %d\n", $counts['drop']);
-}
-printf("  thread promotions:   %d pass(es)\n", $passes);
-printf("after: %d inbox, %d timeline%s\n",
-    $final['inbox'] ?? 0, $final['timeline'] ?? 0, $dry ? '  (dry run, nothing written)' : '');
+printf("  inbox:      %d\n", $counts['inbox']);
+printf("  timeline:   %d\n", $counts['timeline']);
+printf("  promotions: %d pass(es)\n", $passes);
+printf("  changed:    %d row(s)%s\n", $moved, $dry ? '  (dry run, nothing written)' : '');
