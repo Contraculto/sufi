@@ -4,9 +4,10 @@ namespace SUFI\Templates;
 /**
  * Shared visual language for every human-facing page.
  *
- * The look is deliberately old-web: warm paper, a ruled page, serif body type,
- * small-caps labels, hard-edged buttons and folder tabs. No framework, no
- * external fonts, no build step — just a stylesheet you can read.
+ * The look is a minimal fanzine: flat paper, one accent color, condensed
+ * uppercase display type (Anton), mono labels (Space Mono), hard 2px rules.
+ * Body text stays in a system serif so long entries remain easy to read.
+ * Fonts are self-hosted woff2 from fonts/ — no third-party requests.
  *
  * Pages call theme_head() instead of repeating <head> boilerplate, and may pass
  * extra CSS that only applies to that page.
@@ -48,9 +49,9 @@ function theme_head(string $title, string $extra_css = ''): void
 {
     $icon = 'data:image/svg+xml,' . rawurlencode(
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
-        . '<rect width="64" height="64" rx="10" fill="#fbf7ee"/>'
-        . '<text x="32" y="47" font-family="Georgia,serif" font-size="46"'
-        . ' text-anchor="middle" fill="#241f19">&#10087;</text>'
+        . '<rect width="64" height="64" fill="#191817"/>'
+        . '<text x="32" y="54" font-family="monospace" font-size="56"'
+        . ' text-anchor="middle" fill="#d9a441">*</text>'
         . '</svg>'
     );
 
@@ -60,49 +61,70 @@ function theme_head(string $title, string $extra_css = ''): void
     echo "<meta name=\"color-scheme\" content=\"light dark\">\n";
     echo '<title>' . htmlspecialchars($title, ENT_QUOTES) . "</title>\n";
     echo '<link rel="icon" href="' . htmlspecialchars($icon, ENT_QUOTES) . "\">\n";
-    echo "<style>\n" . theme_css();
+    echo "<style>\n" . theme_fonts_css() . "\n" . theme_css();
     if (trim($extra_css) !== '') {
         echo "\n" . $extra_css;
     }
     echo "\n</style>\n</head>\n";
 }
 
+/**
+ * @font-face rules for the self-hosted fonts. URLs are prefixed with the
+ * instance base URL so subdirectory deploys and deep pages resolve correctly.
+ */
+function theme_fonts_css(): string
+{
+    global $base_url;
+    $base = htmlspecialchars((string) ($base_url ?? ''), ENT_QUOTES);
+    $src  = fn(string $file): string => $base . 'fonts/' . $file;
+
+    return "@font-face {\n"
+        . "    font-family: 'Anton';\n"
+        . "    font-style: normal;\n"
+        . "    font-weight: 400;\n"
+        . "    font-display: swap;\n"
+        . "    src: url('" . $src('anton-latin.woff2') . "') format('woff2');\n"
+        . "}\n"
+        . "@font-face {\n"
+        . "    font-family: 'Space Mono';\n"
+        . "    font-style: normal;\n"
+        . "    font-weight: 400;\n"
+        . "    font-display: swap;\n"
+        . "    src: url('" . $src('space-mono-latin-400.woff2') . "') format('woff2');\n"
+        . "}\n"
+        . "@font-face {\n"
+        . "    font-family: 'Space Mono';\n"
+        . "    font-style: normal;\n"
+        . "    font-weight: 700;\n"
+        . "    font-display: swap;\n"
+        . "    src: url('" . $src('space-mono-latin-700.woff2') . "') format('woff2');\n"
+        . "}";
+}
+
 function theme_css(): string
 {
     return <<<'CSS'
 :root {
-    --paper:      #fbf7ee;
-    --paper-2:    #f4ecdd;
-    --paper-3:    #fffdf7;
-    --ink:        #241f19;
-    --ink-soft:   #6f6253;
-    --rule:       #ded2bb;
-    --hair:       rgba(36, 31, 25, .14);
-    --link:       #1b4c77;
-    --link-visited: #6a4079;
-    --stamp:      #a83228;
-    --gold:       #a97e22;
-    --tape:       rgba(169, 126, 34, .26);
-    --shadow:     2px 2px 0 rgba(36, 31, 25, .16);
-    --serif:      Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
-    --sans:       "Helvetica Neue", Helvetica, Arial, sans-serif;
-    --mono:       ui-monospace, "SFMono-Regular", "Cascadia Code", "Fira Mono", Consolas, monospace;
+    --paper:     #f7f6f2;
+    --ink:       #191817;
+    --ink-soft:  #6b6660;
+    --accent:    #1f3fbf;
+    --on-accent: #f7f6f2;
+    --line:      rgba(25, 24, 23, .14);
+    --danger:    #b3261e;
+    --display:   'Anton', 'Arial Narrow', 'Helvetica Neue', sans-serif;
+    --serif:     Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+    --mono:      'Space Mono', ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
     :root {
-        --paper:      #16130f;
-        --paper-2:    #211c15;
-        --paper-3:    #1c1812;
-        --ink:        #ece3d3;
-        --ink-soft:   #a89b88;
-        --rule:       #3b3329;
-        --hair:       rgba(236, 227, 211, .16);
-        --link:       #93bdde;
-        --link-visited: #c8a6d8;
-        --stamp:      #d8756a;
-        --gold:       #d3ab5c;
-        --tape:       rgba(211, 171, 92, .20);
-        --shadow:     2px 2px 0 rgba(0, 0, 0, .55);
+        --paper:     #131211;
+        --ink:       #e8e5dd;
+        --ink-soft:  #9a948a;
+        --accent:    #d9a441;
+        --on-accent: #131211;
+        --line:      rgba(232, 229, 221, .16);
+        --danger:    #e06c60;
     }
 }
 
@@ -114,35 +136,24 @@ body {
     margin: 0;
     min-height: 100vh;
     color: var(--ink);
-    background-color: var(--paper);
-    /* faint ruled paper, fixed so the page reads like a sheet on a desk */
-    background-image: repeating-linear-gradient(
-        0deg, transparent 0 27px, rgba(36, 31, 25, .035) 27px 28px);
-    background-attachment: fixed;
+    background: var(--paper);
     font: 16px/1.65 var(--serif);
 }
-@media (prefers-color-scheme: dark) {
-    body {
-        background-image: repeating-linear-gradient(
-            0deg, transparent 0 27px, rgba(255, 255, 255, .032) 27px 28px);
-    }
-}
 
-::selection { background: var(--ink); color: var(--paper); }
+::selection { background: var(--accent); color: var(--on-accent); }
 
 a {
-    color: var(--link);
+    color: inherit;
     text-decoration: underline;
     text-decoration-thickness: 1px;
     text-underline-offset: 2px;
 }
-a:visited { color: var(--link-visited); }
-a:hover { text-decoration-thickness: 2px; }
+a:hover { color: var(--accent); }
 
 p { margin: 0 0 1rem; }
 h1, h2, h3 { font-weight: 700; line-height: 1.15; margin: 0; }
-hr { border: none; border-top: 1px solid var(--rule); margin: 1.75rem 0; }
-code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .05em .3em; }
+hr { border: none; border-top: 1px solid var(--line); margin: 1.75rem 0; }
+code, kbd { font: .86em/1.4 var(--mono); border: 1px solid var(--line); padding: .05em .3em; }
 
 /* ── page frame ─────────────────────────────────────────────────────────── */
 
@@ -151,8 +162,8 @@ code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .0
 /* ── masthead ───────────────────────────────────────────────────────────── */
 
 .masthead {
-    border-bottom: 3px double var(--ink);
-    padding-bottom: .8rem;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: .9rem;
     margin-bottom: 1.9rem;
 }
 .kicker {
@@ -160,17 +171,18 @@ code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .0
     justify-content: space-between;
     align-items: baseline;
     gap: 1rem;
-    font: 600 .64rem/1.5 var(--sans);
+    font: 700 .66rem/1.5 var(--mono);
     text-transform: uppercase;
-    letter-spacing: .18em;
+    letter-spacing: .15em;
     color: var(--ink-soft);
 }
 .nameplate {
-    font: 700 clamp(2.2rem, 9vw, 3.3rem)/1 var(--serif);
-    letter-spacing: -.02em;
-    margin: .55rem 0 .3rem;
+    font: 400 clamp(2.6rem, 9vw, 4.2rem)/.9 var(--display);
+    text-transform: uppercase;
+    margin: .6rem 0 .35rem;
 }
 .nameplate a { color: inherit; text-decoration: none; }
+.nameplate a:hover { color: var(--accent); }
 .masthead-row {
     display: flex;
     justify-content: space-between;
@@ -179,7 +191,7 @@ code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .0
     flex-wrap: wrap;
 }
 .handle {
-    font: .82rem/1.5 var(--mono);
+    font: .78rem/1.5 var(--mono);
     color: var(--ink-soft);
     overflow-wrap: anywhere;
 }
@@ -187,18 +199,9 @@ code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .0
     font-style: italic;
     color: var(--ink-soft);
     font-size: .95rem;
-    margin: .65rem 0 0;
+    margin: .6rem 0 0;
 }
-.epigraph::before { content: "\2767  "; color: var(--gold); font-style: normal; }
-.lede { font-size: 1.05rem; line-height: 1.7; }
-.lede::first-letter {
-    float: left;
-    font-size: 3.3rem;
-    line-height: .82;
-    padding: .18rem .45rem 0 0;
-    color: var(--stamp);
-    font-weight: 700;
-}
+.lede { font-size: 1.08rem; line-height: 1.7; }
 
 /* ── small labels and section heads ─────────────────────────────────────── */
 
@@ -206,16 +209,17 @@ code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .0
     display: flex;
     align-items: center;
     gap: .75rem;
-    font: 600 .66rem/1.5 var(--sans);
+    font: 700 .66rem/1.5 var(--mono);
     text-transform: uppercase;
-    letter-spacing: .18em;
+    letter-spacing: .15em;
     color: var(--ink-soft);
-    margin: 0 0 .7rem;
+    margin: 0 0 .8rem;
 }
-.eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+.eyebrow::before { content: "\25A0"; color: var(--accent); font-size: .6rem; }
+.eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .eyebrow.plain::after { display: none; }
 .kind {
-    font: 600 .62rem/1.6 var(--sans);
+    font: 700 .62rem/1.6 var(--mono);
     text-transform: uppercase;
     letter-spacing: .12em;
     color: var(--ink-soft);
@@ -225,50 +229,40 @@ code, kbd { font: .86em/1.4 var(--mono); background: var(--paper-2); padding: .0
 /* ── forms ──────────────────────────────────────────────────────────────── */
 
 .sheet {
-    position: relative;
-    background: var(--paper-3);
-    border: 1px solid var(--rule);
-    box-shadow: var(--shadow);
+    background: var(--paper);
+    border: 2px solid var(--ink);
     padding: 1.1rem 1.2rem 1.15rem;
 }
-.sheet::before {
-    /* a strip of tape holding the sheet to the desk */
-    content: "";
-    position: absolute;
-    top: -.55rem;
-    left: 1.4rem;
-    width: 4.4rem;
-    height: 1.05rem;
-    background: var(--tape);
-    transform: rotate(-2.5deg);
-}
-@media (max-width: 480px) { .sheet::before { display: none; } }
 
 .field { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
 .field > span, label.cap {
-    font: 600 .62rem/1.5 var(--sans);
+    font: 700 .62rem/1.5 var(--mono);
     text-transform: uppercase;
-    letter-spacing: .16em;
+    letter-spacing: .14em;
     color: var(--ink-soft);
 }
 input[type="text"], input[type="url"], input[type="password"], input[type="email"], select {
-    font: .88rem/1.5 var(--mono);
+    font: .85rem/1.5 var(--mono);
     color: var(--ink);
-    background: var(--paper-3);
-    border: 1px solid var(--rule);
-    border-radius: 2px;
-    padding: .42rem .55rem;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 0;
+    padding: .45rem .55rem;
     min-width: 0;
 }
-input::placeholder { color: var(--ink-soft); opacity: .75; font-style: italic; }
-input:focus, select:focus, textarea:focus, button:focus-visible {
-    outline: 1px solid var(--ink);
+input::placeholder { color: var(--ink-soft); opacity: .8; }
+input:focus, select:focus, textarea:focus {
+    outline: 2px solid var(--ink);
     outline-offset: 1px;
+}
+button:focus-visible, a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 .stack { display: flex; flex-direction: column; gap: .9rem; }
 .row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 
-/* ── buttons: chunky, hard shadow, lift on hover ────────────────────────── */
+/* ── buttons: flat blocks, hover goes accent ────────────────────────────── */
 
 .btn {
     display: inline-flex;
@@ -276,66 +270,58 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
     justify-content: center;
     gap: .4rem;
     cursor: pointer;
-    font: 600 .68rem/1.5 var(--sans);
+    font: 700 .66rem/1.5 var(--mono);
     text-transform: uppercase;
-    letter-spacing: .14em;
+    letter-spacing: .12em;
     color: var(--ink);
-    background: var(--paper-3);
-    border: 1px solid var(--ink);
-    border-radius: 0;
-    padding: .45rem .85rem;
-    box-shadow: var(--shadow);
-    transition: transform .06s ease, box-shadow .06s ease, background .12s ease;
-    text-decoration: none;
-}
-.btn:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--hair); }
-.btn:active { transform: translate(1px, 1px); box-shadow: none; }
-.btn[disabled] { opacity: .45; cursor: default; transform: none; box-shadow: none; }
-.btn.primary { background: var(--ink); color: var(--paper); }
-.btn.primary:visited { color: var(--paper); }
-.btn.ghost {
-    border-color: var(--rule);
     background: transparent;
-    color: var(--ink-soft);
-    box-shadow: none;
+    border: 2px solid var(--ink);
+    border-radius: 0;
+    padding: .42rem .85rem;
+    text-decoration: none;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
 }
-.btn.ghost:hover { border-color: var(--ink); color: var(--ink); transform: none; box-shadow: none; }
-.btn.danger { border-color: var(--stamp); background: transparent; color: var(--stamp); box-shadow: none; }
-.btn.danger:hover { background: var(--stamp); color: var(--paper); transform: none; box-shadow: none; }
+.btn:hover { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn[disabled] { opacity: .45; cursor: default; }
+.btn[disabled]:hover { background: transparent; border-color: var(--ink); color: var(--ink); }
+.btn.primary { background: var(--ink); color: var(--paper); }
+.btn.primary:hover { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.ghost { border-color: transparent; color: var(--ink-soft); }
+.btn.ghost:hover {
+    background: transparent;
+    border-color: transparent;
+    color: var(--accent);
+    text-decoration: underline;
+}
+.btn.danger { border-color: var(--danger); color: var(--danger); }
+.btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--paper); }
 .btn.small { font-size: .6rem; padding: .22rem .5rem; letter-spacing: .1em; }
 
-/* ── folder tabs ────────────────────────────────────────────────────────── */
+/* ── section nav: flat mono tabs, accent underline on the active one ────── */
 
 .tabs {
     display: flex;
-    align-items: flex-end;
-    gap: .2rem;
+    gap: 1.4rem;
     margin: 2rem 0 1.6rem;
-    padding-left: .4rem;
-    border-bottom: 1px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
     overflow-x: auto;
 }
 .tab {
     cursor: pointer;
-    border: 1px solid var(--rule);
-    border-bottom: none;
-    border-radius: 6px 6px 0 0;
-    background: var(--paper-2);
-    color: var(--ink-soft);
-    padding: .5rem .95rem .55rem;
-    margin-bottom: -1px;
-    font: 600 .66rem/1.5 var(--sans);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    margin-bottom: -2px;
+    padding: .4rem .1rem .5rem;
+    font: 700 .68rem/1.5 var(--mono);
     text-transform: uppercase;
     letter-spacing: .14em;
+    color: var(--ink-soft);
     white-space: nowrap;
 }
-.tab:hover { color: var(--ink); }
-.tab.active {
-    background: var(--paper);
-    color: var(--ink);
-    border-color: var(--ink);
-    padding-bottom: .6rem;
-}
+.tab:hover { color: var(--accent); }
+.tab.active { color: var(--ink); border-bottom-color: var(--accent); }
 
 /* ── entries (posts, tag pages, archives) ───────────────────────────────── */
 
@@ -345,15 +331,13 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
     grid-template-columns: 6rem 1fr;
     gap: 1rem;
     padding: 1.1rem 0;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--line);
 }
 .entry:last-child { border-bottom: none; }
 .entry-meta {
     font: .68rem/1.6 var(--mono);
     color: var(--ink-soft);
     text-align: right;
-    padding-right: .9rem;
-    border-right: 1px solid var(--rule);
 }
 .entry-meta .kind { display: block; }
 .entry-body { font-size: 1.01rem; line-height: 1.7; overflow-wrap: anywhere; }
@@ -377,8 +361,6 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
         align-items: baseline;
         gap: .6rem;
         text-align: left;
-        padding-right: 0;
-        border-right: none;
     }
     .entry-meta .kind { display: inline; }
 }
@@ -396,11 +378,13 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
     flex-wrap: wrap;
     margin-top: 3.5rem;
     padding-top: 1rem;
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--line);
     font: .66rem/1.7 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .08em;
     color: var(--ink-soft);
 }
-.colophon::before { content: "\2042"; flex: none; }
+.colophon::before { content: "\25A0"; flex: none; color: var(--accent); }
 .colophon > * { flex: 1; }
 
 /* ── login gate ─────────────────────────────────────────────────────────── */
@@ -412,30 +396,18 @@ body.gate {
 }
 .gate-card {
     width: min(24rem, 100%);
-    background: var(--paper-3);
-    border: 1px solid var(--ink);
-    box-shadow: 4px 4px 0 var(--hair);
+    background: var(--paper);
+    border: 2px solid var(--ink);
     padding: 1.6rem 1.5rem 1.4rem;
-    position: relative;
-}
-.gate-card::before {
-    content: "";
-    position: absolute;
-    top: -.6rem;
-    left: 50%;
-    width: 4.6rem;
-    height: 1.1rem;
-    background: var(--tape);
-    transform: translateX(-50%) rotate(1.5deg);
 }
 .gate .nameplate { text-align: center; margin: .2rem 0 .4rem; }
-.gate .kicker { border-bottom: 1px solid var(--rule); padding-bottom: .5rem; }
+.gate .kicker { border-bottom: 1px solid var(--line); padding-bottom: .5rem; }
 .gate .epigraph { text-align: center; margin-bottom: 1.2rem; }
 .gate form { display: flex; flex-direction: column; gap: .8rem; }
 .gate .err {
     font: .78rem/1.5 var(--mono);
-    color: var(--stamp);
-    border: 1px dashed var(--stamp);
+    color: var(--danger);
+    border: 1px dashed var(--danger);
     padding: .35rem .5rem;
     margin: 0;
 }
