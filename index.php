@@ -1098,10 +1098,7 @@ function delete_post_endpoint($guid) {
 
     // Remove uploaded files this post was the only user of.
     foreach (local_media_files(json_decode((string) $post['data'], true) ?: []) as $file) {
-        $used = (int) $db_handler->query(
-            "SELECT COUNT(*) FROM Post WHERE data LIKE " . $db_handler->quote('%' . $file . '%')
-        )->fetchColumn();
-        if ($used === 0) {
+        if (System\Database\media_reference_count($db_handler, $file) === 0) {
             @unlink(__DIR__ . '/sys/uploads/' . $file);
             @unlink(__DIR__ . '/sys/uploads/' . preg_replace('/\.([a-z]+)$/', '.thumb.$1', $file));
         }

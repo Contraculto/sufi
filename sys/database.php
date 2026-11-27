@@ -104,6 +104,13 @@ function update_actor_profile($DBH, $name, $summary, $icon) {
         [$name, $summary, $icon]);
 }
 
+/** How many rows (posts, or the actor's avatar) reference an uploaded file name. */
+function media_reference_count($DBH, $name) {
+    $like = $DBH->quote('%' . $name . '%');
+    return (int) $DBH->query("SELECT COUNT(*) FROM Post WHERE data LIKE {$like}")->fetchColumn()
+        + (int) $DBH->query("SELECT COUNT(*) FROM Actor WHERE icon LIKE {$like}")->fetchColumn();
+}
+
 function ensure_actor($DBH, $server, $username, $base_url, $private_key, $name, $summary, $icon) {
     $public_key = '';
     if (is_string($private_key) && $private_key !== ''

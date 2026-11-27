@@ -438,8 +438,8 @@ if ($node !== '' && preg_match('#<script>(.*?)</script>#s', $r[2], $script_match
     file_put_contents($harness_file, <<<'JS'
 'use strict';
 const fs = require('fs');
-// Top-level loadPosts() awaits fetch() before touching the DOM: keep it
-// pending forever so the include neither hits the network nor rejects.
+// Top-level loadTimeline(true) awaits fetch() before touching real DOM: keep
+// fetch pending forever so the include neither hits the network nor rejects.
 globalThis.fetch = () => new Promise(() => {});
 const autoEl = () => ({
     value: '', innerHTML: '', textContent: '', style: {},
@@ -1588,8 +1588,21 @@ check('backup exits cleanly', 0, $code);
 $orphan = $root_dir . '/sys/uploads/' . str_repeat('b', 32) . '.png';
 file_put_contents($orphan, 'x');
 touch($orphan, time() - 2 * 86400);
+
+// An uploaded avatar is referenced only by Actor.icon, never by a post —
+// prune must not treat it as an orphan.
+[$body, $type] = multipart([], 'avatar.png', 'image/png', $png);
+$r = expect('prune-test avatar upload', 200, http('POST', "{$instance}/ap/upload", $body,
+    [$type, 'X-CSRF-Token: ' . $csrf], $jar));
+$avatar_media = json_body($r);
+$r = post("{$instance}/ap/profile", ['name' => 'Alice Updated', 'summary' => 'new bio', 'icon' => $avatar_media['url'], 'csrf_token' => $csrf], $jar);
+check('prune-test avatar saved to profile', 200, $r[0]);
+$avatar_file = $root_dir . '/sys/uploads/' . basename((string) parse_url($avatar_media['url'], PHP_URL_PATH));
+touch($avatar_file, time() - 2 * 86400);
+
 exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($root_dir . '/scripts/ops/prune.php') . ' 2>&1', $out, $code);
 check('orphaned upload removed', false, is_file($orphan));
+check('avatar survives prune', true, is_file($avatar_file));
 
 $out  = [];
 $code = 0;

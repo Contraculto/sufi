@@ -16,16 +16,16 @@ $db_handler = SUFI\System\Database\connect_database();
 $days       = max(1, (int) ($inbox_retention_days ?? 90));
 $deleted    = SUFI\System\Database\prune_inbox($db_handler, $days);
 
-// Uploaded images that no post references and that are older than a day
-// (a day of slack so a compose in progress is never cleaned up).
+// Uploaded images that nothing references and that are older than a day
+// (a day of slack so a compose in progress is never cleaned up). "Nothing"
+// means no post and not the actor's avatar — an uploaded avatar is stored
+// only in Actor.icon, so checking posts alone would delete it.
 $orphans = 0;
 foreach (glob($root . '/sys/uploads/*') ?: [] as $file) {
     if (!is_file($file) || filemtime($file) > time() - 86400) { continue; }
 
     $name = basename($file);
-    $used = (int) $db_handler->query(
-        "SELECT COUNT(*) FROM Post WHERE data LIKE " . $db_handler->quote('%' . $name . '%')
-    )->fetchColumn();
+    $used = SUFI\System\Database\media_reference_count($db_handler, $name);
 
     if ($used === 0 && @unlink($file)) {
         @unlink(preg_replace('/\.([a-z]+)$/', '.thumb.$1', $file));

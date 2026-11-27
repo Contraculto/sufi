@@ -127,10 +127,10 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
         </label>
         <label class="field">
           <span>avatar</span>
-          <div id="avatar-row">
-            <img id="avatar-preview" src="<?= htmlspecialchars($user_data['icon'] ?? '') ?>" alt="avatar preview"<?= ($user_data['icon'] ?? '') === '' ? ' hidden' : '' ?>>
-            <input id="profile-icon" type="url" value="<?= htmlspecialchars($user_data['icon'] ?? '') ?>" placeholder="https://…" oninput="avatarPreview()">
-          </div>
+          <span id="avatar-row">
+            <img id="avatar-preview" src="<?= htmlspecialchars($user_data['icon'] ?? '') ?>" alt="avatar preview" onerror="this.hidden=true"<?= ($user_data['icon'] ?? '') === '' ? ' hidden' : '' ?>>
+            <input id="profile-icon" type="url" value="<?= htmlspecialchars($user_data['icon'] ?? '') ?>" placeholder="https://…" onchange="avatarPreview()">
+          </span>
         </label>
         <label class="field">
           <span>or upload one</span>
@@ -963,11 +963,11 @@ function replyTo(uri) {
     setStatus('replying — write your reply');
 }
 
-function avatarPreview() {
+function avatarPreview(previewSrc) {
     const url = document.getElementById('profile-icon').value.trim();
     const img = document.getElementById('avatar-preview');
     img.hidden = url === '';
-    if (url !== '') { img.src = url; }
+    if (url !== '') { img.src = previewSrc || url; }
 }
 
 async function uploadAvatar() {
@@ -989,8 +989,8 @@ async function uploadAvatar() {
     if (!r.ok) { setStatus('avatar upload failed: ' + await r.text(), false); return; }
 
     const media = await r.json();
-    document.getElementById('profile-icon').value = media.thumb || media.url;
-    avatarPreview();
+    document.getElementById('profile-icon').value = media.url;
+    avatarPreview(media.thumb || media.url);
     setStatus('avatar uploaded — save the profile to apply it');
 }
 
