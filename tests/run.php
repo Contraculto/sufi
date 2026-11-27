@@ -236,6 +236,8 @@ $r = expect('profile page', 200, http('GET', "{$instance}/"));
 check('profile shows handle', true, str_contains($r[2], 'alice@' . parse_url($instance, PHP_URL_HOST) . ':' . parse_url($instance, PHP_URL_PORT)));
 expect('@handle page', 200, http('GET', "{$instance}/@alice"));
 expect('unknown path', 404, http('GET', "{$instance}/nope"));
+expect('fonts served in dev', 200, http('GET', "{$instance}/fonts/anton-latin.woff2"));
+expect('sys/ not served in dev', 404, http('GET', "{$instance}/sys/private.pem"));
 
 section('Actor handles');
 
