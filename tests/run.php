@@ -390,6 +390,7 @@ expect('panel canonical redirect', 302, http('GET', "{$instance}/sufi"));
 $jar = '';
 $r = expect('login form', 200, http('GET', "{$instance}/sufi/", null, [], $jar));
 check('login form has password field', true, str_contains($r[2], 'name="password"'));
+check('gate CSP allows self-hosted fonts', true, str_contains(implode(',', $r[1]['content-security-policy'] ?? []), "font-src 'self'"));
 $login_csrf = form_token($r[2]);
 check('login form has csrf token', true, $login_csrf !== null);
 

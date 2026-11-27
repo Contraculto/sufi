@@ -152,6 +152,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "https://$HOST/sufi/")
 [[ "$code" == "200" ]] || die "panel returned $code"
 log "  panel /sufi/ → 200"
 
+code=$(curl -s -o /dev/null -w '%{http_code}' "https://$HOST/fonts/anton-latin.woff2")
+[[ "$code" == "200" ]] || die "font /fonts/anton-latin.woff2 returned $code — self-hosted fonts not served"
+log "  font /fonts/anton-latin.woff2 → 200"
+
 log "health check"
 ssh "root@$HOST" "cd $REMOTE_DIR && sudo -u www-data php scripts/ops/health.php" | sed 's/^/  /' \
     || log "  health reported problems — see above"
