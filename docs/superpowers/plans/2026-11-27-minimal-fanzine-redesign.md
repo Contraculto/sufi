@@ -1054,7 +1054,7 @@ grep -rnE 'var\(--(paper-2|paper-3|rule|hair|stamp|gold|tape|shadow|link|link-vi
 grep -c '@font-face' templates/_theme.php
 ```
 
-Expected: `TOKENS-CLEAN` and `3` (three `@font-face` blocks: Anton, Space Mono 400, Space Mono 700).
+Expected: `TOKENS-CLEAN` and `4` (three `@font-face` rules + one docblock mention of `@font-face` in `theme_fonts_css()`'s comment).
 
 - [ ] **Step 5: Shut down the sandbox and run the final gates**
 
