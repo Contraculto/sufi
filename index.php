@@ -16,6 +16,19 @@ require __DIR__ . "/sys/delivery.php";
 require __DIR__ . "/templates/actor.php";
 require __DIR__ . "/templates/webfinger.php";
 
+// PHP built-in server (dev/tests): let it serve real static files (fonts/)
+// directly. sys/ and dotfiles stay unreachable, mirroring the Apache rules.
+if (PHP_SAPI === 'cli-server') {
+    $req_path = (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    $static   = realpath(__DIR__ . $req_path);
+    if ($static !== false && is_file($static)
+        && str_starts_with($static, __DIR__ . DIRECTORY_SEPARATOR)
+        && !str_starts_with($static, __DIR__ . DIRECTORY_SEPARATOR . 'sys' . DIRECTORY_SEPARATOR)
+        && !str_contains($req_path, '/.')) {
+        return false;
+    }
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 // Defaults for config.php files written before these settings existed.
 $base_path     = rtrim((string) ($base_path ?? ''), '/');
