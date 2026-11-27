@@ -645,6 +645,23 @@ expect('delete multi-attachment post', 200, post("{$instance}/ap/post/{$multi_gu
 clearstatcache();
 check('attachment removed with post', false, is_file($media2_file));
 
+// A post file that is also the current avatar must survive the post's deletion.
+[$body, $type] = multipart([], 'avatar2.png', 'image/png', $png);
+$r = expect('avatar-shared upload', 200, http('POST', "{$instance}/ap/upload", $body,
+    [$type, 'X-CSRF-Token: ' . $csrf], $jar));
+$shared = json_body($r);
+$r = expect('post sharing the avatar file', 200, post("{$instance}/ap/post", [
+    'content' => 'post using the avatar file', 'attachment' => $shared['url'], 'csrf_token' => $csrf,
+], $jar));
+$shared_post = json_body($r);
+$shared_guid = basename((string) ($shared_post['object']['id'] ?? ''));
+$r = post("{$instance}/ap/profile", ['name' => 'Alice Updated', 'summary' => 'new bio', 'icon' => $shared['url'], 'csrf_token' => $csrf], $jar);
+check('avatar set to shared file', 200, $r[0]);
+$shared_file = $root_dir . '/sys/uploads/' . basename((string) parse_url($shared['url'], PHP_URL_PATH));
+expect('delete post sharing avatar file', 200, post("{$instance}/ap/post/{$shared_guid}", ['action' => 'delete', 'password' => 'testpass']));
+clearstatcache();
+check('avatar file survives post deletion', true, is_file($shared_file));
+
 // Dimension limits: large images are downscaled when GD is available, and
 // decompression bombs are rejected before decoding.
 [$body, $type] = multipart([], 'wide.png', 'image/png', png_bytes(3000, 100));
