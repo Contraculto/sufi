@@ -417,6 +417,11 @@ check('every tab button has an id', true,
     str_contains($r[2], 'id="tab-posts"') && str_contains($r[2], 'id="tab-timeline"')
     && str_contains($r[2], 'id="tab-inbox"')
     && str_contains($r[2], 'id="tab-people"') && str_contains($r[2], 'id="tab-profile"'));
+check('timeline is the default tab', true,
+    str_contains($r[2], 'class="tab active" id="tab-timeline"')
+    && str_contains($r[2], 'id="panel-posts" style="display:none"'));
+check('avatar upload field present', true,
+    str_contains($r[2], 'id="avatar-file"') && str_contains($r[2], 'id="avatar-preview"'));
 
 $node = trim((string) @shell_exec('command -v node 2>/dev/null'));
 if ($node !== '' && preg_match('#<script>(.*?)</script>#s', $r[2], $script_match)) {
@@ -579,6 +584,11 @@ $r = expect('image upload', 200, http('POST', "{$instance}/ap/upload", $body,
 $media = json_body($r);
 check('upload returns local url', true, str_starts_with((string) ($media['url'] ?? ''), "{$instance}/ap/media/"));
 check('upload media type', 'image/png', $media['mediaType'] ?? null);
+
+$r = post("{$instance}/ap/profile", ['name' => 'Alice Updated', 'summary' => 'new bio', 'icon' => $media['url'], 'csrf_token' => $csrf], $jar);
+check('profile update with uploaded avatar', 200, $r[0]);
+$r = expect('actor after avatar update', 200, http('GET', "{$instance}/ap/actor"));
+check('actor icon is the uploaded url', $media['url'], json_body($r)['icon']['url'] ?? null);
 
 [$body, $type] = multipart([], 'notes.txt', 'text/plain', 'not an image');
 $r = http('POST', "{$instance}/ap/upload", $body, [$type, 'X-CSRF-Token: ' . $csrf], $jar);

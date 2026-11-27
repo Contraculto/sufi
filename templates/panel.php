@@ -100,17 +100,17 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
   </section>
 
   <nav class="tabs" aria-label="panel sections">
-    <button class="tab active" id="tab-posts" onclick="switchTab('posts', this)">entries</button>
-    <button class="tab" id="tab-timeline" onclick="switchTab('timeline', this)">timeline</button>
+    <button class="tab active" id="tab-timeline" onclick="switchTab('timeline', this)">timeline</button>
+    <button class="tab" id="tab-posts" onclick="switchTab('posts', this)">entries</button>
     <button class="tab" id="tab-inbox" onclick="switchTab('inbox', this)">inbox</button>
     <button class="tab" id="tab-people" onclick="switchTab('people', this)">people</button>
     <button class="tab" id="tab-profile" onclick="switchTab('profile', this)">profile</button>
   </nav>
 
-  <div id="panel-posts">
+  <div id="panel-posts" style="display:none">
     <div class="empty">opening the notebook…</div>
   </div>
-  <div id="panel-timeline" style="display:none"><div class="empty">opening the timeline…</div></div>
+  <div id="panel-timeline"><div class="empty">opening the timeline…</div></div>
   <div id="panel-inbox" style="display:none"><div class="empty">opening the notebook…</div></div>
   <div id="panel-people" style="display:none"><div class="empty">opening the notebook…</div></div>
   <div id="panel-profile" style="display:none">
@@ -126,8 +126,15 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
           <textarea id="profile-summary" rows="4"><?= htmlspecialchars($user_data['summary'] ?? '') ?></textarea>
         </label>
         <label class="field">
-          <span>avatar URL</span>
-          <input id="profile-icon" type="url" value="<?= htmlspecialchars($user_data['icon'] ?? '') ?>">
+          <span>avatar</span>
+          <div id="avatar-row">
+            <img id="avatar-preview" src="<?= htmlspecialchars($user_data['icon'] ?? '') ?>" alt="avatar preview"<?= ($user_data['icon'] ?? '') === '' ? ' hidden' : '' ?>>
+            <input id="profile-icon" type="url" value="<?= htmlspecialchars($user_data['icon'] ?? '') ?>" placeholder="https://…" oninput="avatarPreview()">
+          </div>
+        </label>
+        <label class="field">
+          <span>or upload one</span>
+          <input type="file" id="avatar-file" accept="image/jpeg,image/png,image/gif,image/webp" onchange="uploadAvatar()">
         </label>
         <div><button class="btn primary" onclick="saveProfile()">save profile</button></div>
       </div>
@@ -192,12 +199,14 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     margin-top: .7rem;
     font-size: .8rem;
 }
-.attach-row input[type=file] {
+.attach-row input[type=file],
+#avatar-file {
     font: .68rem/1.5 var(--mono);
     color: var(--ink-soft);
     max-width: 100%;
 }
-.attach-row input[type=file]::file-selector-button {
+.attach-row input[type=file]::file-selector-button,
+#avatar-file::file-selector-button {
     font: 700 .62rem/1.5 var(--mono);
     text-transform: uppercase;
     letter-spacing: .1em;
@@ -209,7 +218,8 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     margin-right: .55rem;
     cursor: pointer;
 }
-.attach-row input[type=file]::file-selector-button:hover {
+.attach-row input[type=file]::file-selector-button:hover,
+#avatar-file::file-selector-button:hover {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
@@ -317,6 +327,15 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     color: var(--ink);
     font: .95rem/1.6 var(--serif);
     resize: vertical;
+}
+#avatar-row { display: flex; align-items: center; gap: .6rem; }
+#avatar-row input[type=url] { flex: 1; }
+#avatar-preview {
+    width: 3.2rem;
+    height: 3.2rem;
+    object-fit: cover;
+    border: 1px solid var(--line);
+    flex: none;
 }
 </style>
 
@@ -939,9 +958,40 @@ function groupParentExcerpt(html) {
 
 function replyTo(uri) {
     document.getElementById('reply').value = uri;
-    switchTab('posts', document.querySelector('.tab'));
+    switchTab('posts', document.getElementById('tab-posts'));
     document.getElementById('content').focus();
     setStatus('replying — write your reply');
+}
+
+function avatarPreview() {
+    const url = document.getElementById('profile-icon').value.trim();
+    const img = document.getElementById('avatar-preview');
+    img.hidden = url === '';
+    if (url !== '') { img.src = url; }
+}
+
+async function uploadAvatar() {
+    const input = document.getElementById('avatar-file');
+    const file = input.files[0];
+    input.value = '';
+    if (!file) { return; }
+
+    const form = new FormData();
+    form.append('file', file);
+    setStatus('uploading avatar…');
+
+    const r = await fetch(`${BASE}/ap/upload`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': CSRF_TOKEN },
+        body: form
+    });
+    if (!r.ok) { setStatus('avatar upload failed: ' + await r.text(), false); return; }
+
+    const media = await r.json();
+    document.getElementById('profile-icon').value = media.thumb || media.url;
+    avatarPreview();
+    setStatus('avatar uploaded — save the profile to apply it');
 }
 
 async function saveProfile() {
@@ -1054,7 +1104,7 @@ const initialTab = new URLSearchParams(location.search).get('tab');
 if (initialTab && loaders[initialTab]) {
     switchTab(initialTab, document.getElementById(`tab-${initialTab}`));
 } else {
-    loadPosts();
+    loadTimeline(true);
 }
 </script>
 </body>
