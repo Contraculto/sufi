@@ -758,6 +758,13 @@ header("Content-Security-Policy: default-src 'none'; img-src 'self' data:; font-
     . "style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; "
 ```
 
+- [ ] **Step 1b: Fix `--stamp` references in the panel JS**
+
+`--stamp` is deleted from the theme, but two inline-style assignments in the panel JavaScript still reference it. With the token undefined, `var(--stamp)` is invalid at computed-value time and the color silently falls back to the inherited value — the status error red and the over-limit counter red would stop rendering. Point both at `--danger`:
+
+- `templates/panel.php` (`setStatus`): `el.style.color = ok ? '' : 'var(--stamp)';` → `el.style.color = ok ? '' : 'var(--danger)';`
+- `templates/panel.php` (char counter): `el.style.color = n > MAX_CHARS ? 'var(--stamp)' : '';` → `el.style.color = n > MAX_CHARS ? 'var(--danger)' : '';`
+
 - [ ] **Step 2: Replace the whole `<style>` block**
 
 Replace everything from `<style>` (line 143) through `</style>` (line 320) with:

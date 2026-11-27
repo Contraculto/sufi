@@ -372,7 +372,7 @@ function fullDate(value) {
 function setStatus(msg, ok = true) {
     const el = document.getElementById('status');
     el.textContent = msg;
-    el.style.color = ok ? '' : 'var(--stamp)';
+    el.style.color = ok ? '' : 'var(--danger)';
     if (msg) setTimeout(() => el.textContent = '', 3000);
 }
 
@@ -407,7 +407,7 @@ function countChars() {
     meter.classList.toggle('over', n > MAX_CHARS);
     const el = document.getElementById('charcount');
     el.textContent = n > 0 ? `${n}/${MAX_CHARS}` : '';
-    el.style.color = n > MAX_CHARS ? 'var(--stamp)' : '';
+    el.style.color = n > MAX_CHARS ? 'var(--danger)' : '';
 }
 
 async function attachImages() {
