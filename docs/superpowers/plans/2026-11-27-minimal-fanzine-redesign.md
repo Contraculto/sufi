@@ -284,7 +284,8 @@ function theme_head(string $title, string $extra_css = ''): void
 function theme_fonts_css(): string
 {
     global $base_url;
-    $base = htmlspecialchars((string) ($base_url ?? ''), ENT_QUOTES);
+    // Inside <style>, HTML entities are not decoded — escape for CSS instead.
+    $base = str_replace(['\\', "'"], ['\\\\', "\\'"], (string) ($base_url ?? ''));
     $src  = fn(string $file): string => $base . 'fonts/' . $file;
 
     return "@font-face {\n"
@@ -454,12 +455,12 @@ input[type="text"], input[type="url"], input[type="password"], input[type="email
     font: .85rem/1.5 var(--mono);
     color: var(--ink);
     background: var(--paper);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ink-soft);
     border-radius: 0;
     padding: .45rem .55rem;
     min-width: 0;
 }
-input::placeholder { color: var(--ink-soft); opacity: .8; }
+input::placeholder { color: var(--ink-soft); }
 input:focus, select:focus, textarea:focus {
     outline: 2px solid var(--ink);
     outline-offset: 1px;
@@ -512,7 +513,7 @@ button:focus-visible, a:focus-visible {
     display: flex;
     gap: 1.4rem;
     margin: 2rem 0 1.6rem;
-    border-bottom: 2px solid var(--ink);
+    background-image: linear-gradient(to top, var(--ink) 2px, transparent 2px);
     overflow-x: auto;
 }
 .tab {
@@ -521,7 +522,6 @@ button:focus-visible, a:focus-visible {
     border: none;
     border-bottom: 2px solid transparent;
     border-radius: 0;
-    margin-bottom: -2px;
     padding: .4rem .1rem .5rem;
     font: 700 .68rem/1.5 var(--mono);
     text-transform: uppercase;

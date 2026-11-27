@@ -114,7 +114,7 @@ Three voices:
   `.primary` = ink block / paper text. Hover → accent bg + on-accent text.
   `.ghost` = borderless mono, accent on hover. `.danger` = `--danger` outline,
   hover fills `--danger`. `.small` scales down as today.
-- **Inputs**: square corners, 1px `--line` border, mono; focus = 2px `--ink`
+- **Inputs**: square corners, 1px `--ink-soft` border (AA non-text contrast), mono; focus = 2px `--ink`
   outline. Placeholders no longer italic.
 - **Login gate**: flat card (2px ink border, no tape, no shadow), Anton
   title, mono labels; error box keeps a `--danger` border, flat.
