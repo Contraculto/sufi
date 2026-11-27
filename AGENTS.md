@@ -119,3 +119,4 @@ See `deploy/` for Apache and Nginx configuration examples.
 6. **Never enable `$allow_private_fetch` in production.** It disables the HTTPS/private-IP guards on outbound fetches and exists only for local tests.
 7. **Schema changes need a migration.** Bump `SCHEMA_VERSION` in `sys/database.php` and add the step inside `init_schema()`; never edit old migration steps.
 8. **Run `./scripts/test.sh` before touching production.** It covers discovery, posting, panel auth, inbox signature rejection and delivery. Not shipping untested federation changes matters more here than in a normal app: a broken signature check can silently defederate you.
+9. **The panel CSP must keep `font-src 'self'`.** The theme's self-hosted fonts fail silently without it (default-src 'none' blocks them).

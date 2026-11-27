@@ -31,6 +31,7 @@ $home_css = <<<'CSS'
     display: block;
     font: 400 1.9rem/1.1 var(--display);
     text-transform: uppercase;
+    letter-spacing: normal;
     color: var(--ink);
 }
 .stats span {
@@ -51,7 +52,7 @@ $home_css = <<<'CSS'
     border: 2px solid var(--ink);
     padding: 1.1rem 1.2rem;
 }
-.visit code { font-size: .9rem; }
+.visit code { font-size: .9rem; overflow-wrap: anywhere; }
 .links {
     display: flex;
     gap: 1.1rem;

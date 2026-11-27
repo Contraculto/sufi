@@ -676,6 +676,7 @@ $home_css = <<<'CSS'
     display: block;
     font: 400 1.9rem/1.1 var(--display);
     text-transform: uppercase;
+    letter-spacing: normal;
     color: var(--ink);
 }
 .stats span {
@@ -696,7 +697,7 @@ $home_css = <<<'CSS'
     border: 2px solid var(--ink);
     padding: 1.1rem 1.2rem;
 }
-.visit code { font-size: .9rem; }
+.visit code { font-size: .9rem; overflow-wrap: anywhere; }
 .links {
     display: flex;
     gap: 1.1rem;
@@ -786,7 +787,7 @@ Replace everything from `<style>` (line 143) through `</style>` (line 320) with:
     color: var(--ink);
     font: 1.02rem/1.75rem var(--serif);
 }
-#compose textarea:focus { outline: none; border-bottom-color: var(--ink); }
+#compose textarea:focus { outline: none; border-bottom-color: var(--ink); box-shadow: 0 1px 0 var(--ink); }
 #compose textarea::placeholder { color: var(--ink-soft); }
 
 .compose-foot {

@@ -156,7 +156,7 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     color: var(--ink);
     font: 1.02rem/1.75rem var(--serif);
 }
-#compose textarea:focus { outline: none; border-bottom-color: var(--ink); }
+#compose textarea:focus { outline: none; border-bottom-color: var(--ink); box-shadow: 0 1px 0 var(--ink); }
 #compose textarea::placeholder { color: var(--ink-soft); }
 
 .compose-foot {
