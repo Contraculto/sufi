@@ -134,7 +134,7 @@ Three voices:
 ## 6. Fonts pipeline + deploy
 
 - Add to repo: `fonts/anton-latin.woff2`, `fonts/space-mono-latin-400.woff2`,
-  `fonts/space-mono-latin-700.woff2` (latin subsets, ~120KB total, downloaded
+  `fonts/space-mono-latin-700.woff2` (latin subsets, ~52KB total, downloaded
   once from Google Fonts and committed).
 - `theme_head()` reads `global $base_url` (set by `index.php`) and emits
   `@font-face` rules with base-prefixed URLs (`$base_url . 'fonts/…'`), so
