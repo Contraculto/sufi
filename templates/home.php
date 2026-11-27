@@ -23,31 +23,43 @@ $home_css = <<<'CSS'
     gap: 1.8rem;
     flex-wrap: wrap;
     margin: 1.4rem 0 2.2rem;
-    padding: .8rem 0;
-    border-top: 1px solid var(--rule);
-    border-bottom: 1px solid var(--rule);
-    font: .68rem/1.6 var(--mono);
+    padding: .9rem 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+}
+.stats b {
+    display: block;
+    font: 400 1.9rem/1.1 var(--display);
+    text-transform: uppercase;
+    color: var(--ink);
+}
+.stats span {
+    font: 700 .64rem/1.6 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .12em;
     color: var(--ink-soft);
 }
-.stats b { display: block; font: 700 1.4rem/1.2 var(--serif); color: var(--ink); }
 .entry-body figure { margin: .6rem 0; }
 .entry-body figure img {
     max-width: 100%;
     display: block;
-    border: 1px solid var(--rule);
-    padding: 3px;
-    background: var(--paper-3);
+    border: 1px solid var(--line);
 }
-.entry-body figcaption { font: .72rem/1.5 var(--mono); color: var(--ink-soft); margin-top: .25rem; }
+.entry-body figcaption { font: .7rem/1.5 var(--mono); color: var(--ink-soft); margin-top: .3rem; }
 .visit {
     margin-top: 2.6rem;
-    background: var(--paper-3);
-    border: 1px solid var(--rule);
-    box-shadow: var(--shadow);
+    border: 2px solid var(--ink);
     padding: 1.1rem 1.2rem;
 }
-.visit code { font-size: .9rem; padding: .1rem .35rem; }
-.links { display: flex; gap: 1.1rem; flex-wrap: wrap; font: .7rem/1.7 var(--mono); }
+.visit code { font-size: .9rem; }
+.links {
+    display: flex;
+    gap: 1.1rem;
+    flex-wrap: wrap;
+    font: .7rem/1.7 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+}
 CSS;
 
 header('Content-Type: text/html; charset=utf-8');
