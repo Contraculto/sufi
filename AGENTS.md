@@ -42,6 +42,7 @@ sufi/
 │   └── delivery.php        # signing, fetch guards, delivery worker core
 ├── templates/              # HTML templates (ActivityPub JSON + panel)
 │   ├── _theme.php          # Shared CSS/head for the human-facing pages
+├── fonts/                  # Self-hosted woff2 (Anton, Space Mono) + OFL licenses
 ├── deploy/                 # Web server configuration examples
 ├── scripts/test.sh         # Test runner (lint + sandbox + suite)
 ├── scripts/ops/deliver.php # Delivery worker (cron, every minute)

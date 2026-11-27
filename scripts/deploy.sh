@@ -27,7 +27,7 @@ CHECK=0
 # file that silently does not get deployed — the two outages so far came from
 # exactly that, so --check validates the lists and deploy.sh refuses to start
 # if something is missing.
-APP_FILES=(index.php .htaccess README.md LICENSE AGENTS.md templates deploy)
+APP_FILES=(index.php .htaccess README.md LICENSE AGENTS.md templates fonts deploy)
 SYS_FILES=(sys/database.php sys/sufi.sql sys/delivery.php)
 OPS_FILES=(deliver.php health.php backup.sh restore.sh prune.php backfill.php reclassify.php)
 
