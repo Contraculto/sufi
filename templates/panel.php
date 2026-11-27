@@ -1,7 +1,7 @@
 <?php
 global $server, $username, $user_data, $panel_url, $base_url, $max_post_chars, $db_handler;
 header('Content-Type: text/html; charset=utf-8');
-header("Content-Security-Policy: default-src 'none'; img-src 'self' data:; "
+header("Content-Security-Policy: default-src 'none'; img-src 'self' data:; font-src 'self'; "
     . "style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; "
     . "form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'");
 
@@ -148,17 +148,16 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     width: 100%;
     min-height: 8.4rem;
     resize: vertical;
-    padding: 0;
+    padding: .2rem 0;
     border: none;
+    border-bottom: 1px solid var(--line);
     outline: none;
-    background-color: transparent;
+    background: transparent;
     color: var(--ink);
-    font: 1.02rem/1.9rem var(--serif);
-    background-image: repeating-linear-gradient(
-        180deg, transparent 0 calc(1.9rem - 1px), var(--rule) calc(1.9rem - 1px) 1.9rem);
-    background-attachment: local;
+    font: 1.02rem/1.75rem var(--serif);
 }
-#compose textarea::placeholder { font-style: italic; color: var(--ink-soft); }
+#compose textarea:focus { outline: none; border-bottom-color: var(--ink); }
+#compose textarea::placeholder { color: var(--ink-soft); }
 
 .compose-foot {
     display: flex;
@@ -167,14 +166,14 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     flex-wrap: wrap;
     margin-top: .7rem;
     padding-top: .7rem;
-    border-top: 1px dashed var(--rule);
+    border-top: 1px solid var(--line);
 }
 .compose-foot #reply { flex: 1; min-width: 11rem; }
 #post-btn { margin-left: auto; }
 .meter { display: inline-flex; gap: 2px; }
-.meter i { display: block; width: 4px; height: 11px; background: var(--rule); }
+.meter i { display: block; width: 4px; height: 11px; background: var(--line); }
 .meter i.on { background: var(--ink); }
-.meter.over i.on { background: var(--stamp); }
+.meter.over i.on { background: var(--danger); }
 #charcount { font: .68rem/1.5 var(--mono); color: var(--ink-soft); }
 
 .attach-grid {
@@ -199,15 +198,21 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     max-width: 100%;
 }
 .attach-row input[type=file]::file-selector-button {
-    font: 600 .62rem/1.5 var(--sans);
+    font: 700 .62rem/1.5 var(--mono);
     text-transform: uppercase;
     letter-spacing: .1em;
     color: var(--ink);
-    background: var(--paper-3);
-    border: 1px solid var(--rule);
+    background: transparent;
+    border: 1px solid var(--ink);
+    border-radius: 0;
     padding: .3rem .55rem;
     margin-right: .55rem;
     cursor: pointer;
+}
+.attach-row input[type=file]::file-selector-button:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
 }
 
 #attach-preview { margin-top: .5rem; }
@@ -221,7 +226,7 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     width: 3.2rem;
     height: 3.2rem;
     object-fit: cover;
-    border: 1px solid var(--rule);
+    border: 1px solid var(--line);
     display: block;
 }
 .attach-item input[type=text] { flex: 1; }
@@ -233,8 +238,8 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 .entry-edit textarea {
     width: 100%;
     padding: .5rem;
-    border: 1px solid var(--rule);
-    background: var(--paper-3);
+    border: 1px solid var(--line);
+    background: var(--paper);
     color: var(--ink);
     font: .95rem/1.6 var(--serif);
     resize: vertical;
@@ -242,14 +247,12 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 
 .inbox-toolbar { display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .8rem; }
 .letter {
-    position: relative;
-    background: var(--paper-3);
-    border: 1px solid var(--rule);
-    box-shadow: 1px 1px 0 var(--hair);
+    background: var(--paper);
+    border: 1px solid var(--line);
     padding: .85rem 1rem .75rem;
     margin-bottom: .85rem;
 }
-.letter.unread { border-left: 3px solid var(--stamp); }
+.letter.unread { border-left: 3px solid var(--accent); }
 .letter-head {
     display: flex;
     align-items: center;
@@ -262,13 +265,12 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     font: 700 .56rem/1.6 var(--mono);
     text-transform: uppercase;
     letter-spacing: .08em;
-    color: var(--stamp);
-    border: 1px solid var(--stamp);
+    color: var(--accent);
+    border: 1px solid var(--accent);
     padding: 0 .35rem;
-    transform: rotate(-2deg);
 }
 .who { font-family: var(--mono); color: var(--ink); text-decoration: none; }
-.who:hover { text-decoration: underline; }
+.who:hover { text-decoration: underline; color: var(--accent); }
 .letter-body {
     font-size: .95rem;
     line-height: 1.6;
@@ -278,17 +280,16 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 }
 .letter-body.muted { font-style: italic; }
 .letter-actions { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .55rem; }
-.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--stamp); }
-.thread { margin-top: .7rem; padding-left: .8rem; border-left: 2px solid var(--rule); }
-.letter.group { border-left: 3px solid var(--rule); }
-.letter.group.unread { border-left-color: var(--stamp); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.thread { margin-top: .7rem; padding-left: .8rem; border-left: 2px solid var(--line); }
+.letter.group { border-left: 3px solid var(--line); }
+.letter.group.unread { border-left-color: var(--accent); }
 .group-parent { color: var(--ink-soft); font-size: .88rem; }
 .group-thread { margin-top: .55rem; }
 .letter.reply {
     background: transparent;
     border: none;
-    border-top: 1px dotted var(--rule);
-    box-shadow: none;
+    border-top: 1px dotted var(--line);
     padding: .5rem 0 .4rem;
     margin-bottom: 0;
 }
@@ -303,7 +304,7 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
     gap: .75rem;
     flex-wrap: wrap;
     padding: .5rem 0;
-    border-bottom: 1px dotted var(--rule);
+    border-bottom: 1px solid var(--line);
     font: .82rem/1.6 var(--mono);
 }
 .person .pname { font-family: var(--serif); font-size: .9rem; color: var(--ink-soft); margin-left: .5rem; }
@@ -311,8 +312,8 @@ $following_count = \SUFI\System\Database\count_following($db_handler);
 
 #panel-profile textarea {
     padding: .5rem .55rem;
-    border: 1px solid var(--rule);
-    background: var(--paper-3);
+    border: 1px solid var(--line);
+    background: var(--paper);
     color: var(--ink);
     font: .95rem/1.6 var(--serif);
     resize: vertical;
