@@ -69,15 +69,16 @@ function theme_head(string $title, string $extra_css = ''): void
 }
 
 /**
- * @font-face rules for the self-hosted fonts. URLs are prefixed with the
- * instance base URL so subdirectory deploys and deep pages resolve correctly.
+ * @font-face rules for the self-hosted fonts. URLs use the /ap/fonts/ router
+ * endpoint (see serve_font()), prefixed with the instance base URL, so every
+ * deployment layout resolves them identically.
  */
 function theme_fonts_css(): string
 {
     global $base_url;
     // Inside <style>, HTML entities are not decoded — escape for CSS instead.
     $base = str_replace(['\\', "'"], ['\\\\', "\\'"], (string) ($base_url ?? ''));
-    $src  = fn(string $file): string => $base . 'fonts/' . $file;
+    $src  = fn(string $file): string => $base . 'ap/fonts/' . $file;
 
     return "@font-face {\n"
         . "    font-family: 'Anton';\n"

@@ -268,6 +268,8 @@ switch ($request) {
             tag_page($m[1]);
         } elseif (preg_match('#^/ap/media/([a-f0-9]{32}(?:\.thumb)?\.(?:jpg|png|gif|webp))$#', $request, $m)) {
             serve_media($m[1]);
+        } elseif (preg_match('#^/ap/fonts/([a-z0-9-]+\.woff2)$#', $request, $m)) {
+            serve_font($m[1]);
         } elseif (preg_match('#^/ap/post/([a-f0-9-]+)$#', $request, $m)) {
             $guid   = $m[1];
             $action = $_POST['action'] ?? ($body['action'] ?? null);
@@ -1760,6 +1762,26 @@ function serve_media($name) {
     }
 
     header('Content-Type: ' . MEDIA_TYPES[$ext]);
+    header('Content-Length: ' . filesize($path));
+    header('Cache-Control: public, max-age=31536000, immutable');
+    readfile($path);
+}
+
+/**
+ * Fonts go through the router, not static file serving, because reachability
+ * of /fonts/ depends on the deployment layout: in domain-root coexistence the
+ * app dir is only exposed at /sufi/, while /ap/* is always routed here.
+ */
+function serve_font($name) {
+    $path = __DIR__ . '/fonts/' . $name;
+
+    if (!is_file($path)) {
+        http_response_code(404);
+        echo 'Not found';
+        return;
+    }
+
+    header('Content-Type: font/woff2');
     header('Content-Length: ' . filesize($path));
     header('Cache-Control: public, max-age=31536000, immutable');
     readfile($path);

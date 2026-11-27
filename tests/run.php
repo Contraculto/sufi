@@ -238,6 +238,9 @@ expect('@handle page', 200, http('GET', "{$instance}/@alice"));
 expect('unknown path', 404, http('GET', "{$instance}/nope"));
 expect('fonts served in dev', 200, http('GET', "{$instance}/fonts/anton-latin.woff2"));
 expect('sys/ not served in dev', 404, http('GET', "{$instance}/sys/private.pem"));
+$r = expect('fonts served via router', 200, http('GET', "{$instance}/ap/fonts/anton-latin.woff2"));
+check('font content type', true, str_contains(implode(',', $r[1]['content-type'] ?? []), 'font/woff2'));
+expect('font traversal blocked', 404, http('GET', "{$instance}/ap/fonts/..%2Fprivate.pem"));
 
 section('Actor handles');
 
@@ -1422,6 +1425,7 @@ check('follow recorded', $follow_count + 1,
 section('Subdirectory deployment (/sufi prefix)');
 
 $r = expect('prefixed actor', 200, http('GET', "{$prefix}/sufi/ap/actor"));
+expect('prefixed font via router', 200, http('GET', "{$prefix}/sufi/ap/fonts/anton-latin.woff2"));
 $actor = json_body($r);
 check('prefixed actor id', "{$prefix}/sufi/ap/actor", $actor['id'] ?? null);
 check('prefixed inbox', "{$prefix}/sufi/ap/inbox", $actor['inbox'] ?? null);

@@ -137,9 +137,15 @@ Three voices:
   `fonts/space-mono-latin-700.woff2` (latin subsets, ~52KB total, downloaded
   once from Google Fonts and committed).
 - `theme_head()` reads `global $base_url` (set by `index.php`) and emits
-  `@font-face` rules with base-prefixed URLs (`$base_url . 'fonts/…'`), so
-  subdirectory deploys and deep pages (`/ap/actor`, `/tags/x`) resolve
-  correctly. `font-display: swap`.
+  `@font-face` rules with base-prefixed URLs, `font-display: swap`.
+- Font URLs point at a router endpoint, `$base_url . 'ap/fonts/<file>'`,
+  served by `serve_font()` in `index.php` (strict `[a-z0-9-]+\.woff2` name
+  check, `font/woff2`, far-future immutable cache headers). A plain static
+  `/fonts/` URL was the original design, but reachability of `/fonts/`
+  depends on the deployment layout: in domain-root coexistence (production)
+  the app dir is only exposed at `/sufi/` while `/ap/*` is always routed to
+  `index.php` — so the router endpoint works identically in standalone,
+  subdirectory, and coexistence deploys. Found by the deploy smoke check.
 - `.htaccess` already serves existing files directly (`!-f` conditions /
   coexistence block only intercepts AP paths) — no router change.
 - `scripts/deploy.sh`: add `fonts` to `APP_FILES` so `--check` validates it
